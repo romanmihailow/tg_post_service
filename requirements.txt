@@ -1,0 +1,6 @@
+openai
+telethon
+sqlalchemy
+pydantic
+pydantic-settings
+python-dotenv
