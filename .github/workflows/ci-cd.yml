@@ -49,6 +49,5 @@ jobs:
             set -e
             cd "${{ secrets.DEPLOY_PATH }}"
             echo "${{ secrets.GHCR_TOKEN }}" | docker login ghcr.io -u "${{ secrets.GHCR_USERNAME }}" --password-stdin
-            IMAGE_REPO="${{ github.repository }}" docker compose pull
-            IMAGE_REPO="${{ github.repository }}" docker compose up -d --remove-orphans
+            bash ./deploy.sh
             docker image prune -f
