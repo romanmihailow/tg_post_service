@@ -1219,7 +1219,7 @@ async def _plan_user_reply_for_candidate(
     chat_state: ChatState,
     candidate: dict,
 ) -> None:
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     today = now.strftime("%Y-%m-%d")
     _, reply_level = _get_account_activity_levels(config, pipeline.account_name)
     reply_factor = _activity_factor(reply_level)
