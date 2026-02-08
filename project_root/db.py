@@ -5,6 +5,7 @@ from __future__ import annotations
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Generator, Iterable
+import json
 
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import Engine
@@ -244,6 +245,38 @@ def _ensure_userbot_persona_schema() -> None:
             connection.execute(
                 text("ALTER TABLE userbot_persona ADD COLUMN persona_style_hint TEXT")
             )
+        if "persona_topics" not in columns:
+            connection.execute(
+                text("ALTER TABLE userbot_persona ADD COLUMN persona_topics TEXT")
+            )
+        if "persona_offtopic_tolerance" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE userbot_persona "
+                    "ADD COLUMN persona_offtopic_tolerance INTEGER DEFAULT 50"
+                )
+            )
+        if "persona_topic_priority" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE userbot_persona "
+                    "ADD COLUMN persona_topic_priority INTEGER DEFAULT 50"
+                )
+            )
+        if "persona_offtopic_tolerance" in columns:
+            connection.execute(
+                text(
+                    "UPDATE userbot_persona SET persona_offtopic_tolerance = 50 "
+                    "WHERE persona_offtopic_tolerance IS NULL"
+                )
+            )
+        if "persona_topic_priority" in columns:
+            connection.execute(
+                text(
+                    "UPDATE userbot_persona SET persona_topic_priority = 50 "
+                    "WHERE persona_topic_priority IS NULL"
+                )
+            )
         connection.commit()
 
 
@@ -254,52 +287,142 @@ def _seed_userbot_persona(session: Session, account_names: list[str]) -> None:
         {
             "persona_tone": "analytical",
             "persona_verbosity": "medium",
-            "persona_style_hint": "Ведущий, аналитично задаёт вопросы и направляет дискуссию.",
+            "persona_style_hint": (
+                "Спокойный ведущий дискуссии. Формулирует нейтральные вопросы, "
+                "собирает ключевые факты и задаёт рамку обсуждения. Пишет без оценок, "
+                "без сленга, без эмоций, подчёркивает разные стороны темы."
+            ),
+            "persona_topics": ["политика", "экономика", "технологии", "медиа", "общество"],
+            "persona_offtopic_tolerance": 80,
+            "persona_topic_priority": 70,
         },
         {
             "persona_tone": "analytical",
             "persona_verbosity": "medium",
-            "persona_style_hint": "Вдумчивый комментатор, объясняет контекст без эмоций.",
+            "persona_style_hint": (
+                "Внимательный читатель, который следит за экономикой и технологиями. "
+                "Объясняет контекст, связывает новости про бизнес, рынки и IT без "
+                "кликбейта и жёстких оценок."
+            ),
+            "persona_topics": [
+                "экономика",
+                "бизнес",
+                "финансы",
+                "рынки",
+                "технологии",
+                "it",
+            ],
+            "persona_offtopic_tolerance": 70,
+            "persona_topic_priority": 75,
         },
         {
             "persona_tone": "skeptical",
             "persona_verbosity": "short",
-            "persona_style_hint": "Короткие сомнения и вторая сторона вопроса без агрессии.",
+            "persona_style_hint": (
+                "Сдержанный скептик. Пишет коротко, мягко ставит под сомнение выводы, "
+                "указывает на недостающие факты и альтернативные версии. "
+                "Без агрессии и сарказма."
+            ),
+            "persona_topics": ["политика", "общество", "безопасность"],
+            "persona_offtopic_tolerance": 60,
+            "persona_topic_priority": 80,
         },
         {
             "persona_tone": "ironic",
             "persona_verbosity": "short",
-            "persona_style_hint": "Лёгкая ирония без токсичности и нападок.",
+            "persona_style_hint": (
+                "Короткие комментарии с лёгкой иронией. Подмечает странные детали в "
+                "новостях про медиа, соцсети, спорт и поп-культуру. Юмор мягкий, "
+                "без токсичности и нападок."
+            ),
+            "persona_topics": ["соцсети", "медиа", "культура", "спорт"],
+            "persona_offtopic_tolerance": 50,
+            "persona_topic_priority": 70,
         },
         {
             "persona_tone": "neutral",
             "persona_verbosity": "short",
-            "persona_style_hint": "Простые бытовые формулировки, как у обычного читателя.",
-        },
-        {
-            "persona_tone": "analytical",
-            "persona_verbosity": "medium",
-            "persona_style_hint": "Технарь, иногда уходит в детали и механику.",
+            "persona_style_hint": (
+                "Пишет простым человеческим языком. Спрашивает, что новость значит "
+                "для обычных людей: семья, работа, образование, здоровье. "
+                "Без пафоса и сложных терминов."
+            ),
+            "persona_topics": [
+                "общество",
+                "образование",
+                "здоровье",
+                "психология",
+                "культура",
+            ],
+            "persona_offtopic_tolerance": 90,
+            "persona_topic_priority": 60,
         },
         {
             "persona_tone": "emotional",
             "persona_verbosity": "medium",
-            "persona_style_hint": "Гуманитарный взгляд, акцент на социальном аспекте.",
+            "persona_style_hint": (
+                "Эмоциональный, но адекватный болельщик. Реагирует на спортивные "
+                "новости, трансферы и турниры. Может немного порадоваться или "
+                "расстроиться, но без токсичности."
+            ),
+            "persona_topics": ["спорт", "футбол", "киберспорт"],
+            "persona_offtopic_tolerance": 50,
+            "persona_topic_priority": 85,
         },
         {
             "persona_tone": "analytical",
-            "persona_verbosity": "short",
-            "persona_style_hint": "Прагматик, говорит о выгодах и практических последствиях.",
+            "persona_verbosity": "medium",
+            "persona_style_hint": (
+                "Смотрит на новости через призму города и цифровых сервисов. "
+                "Обсуждает, как технологии, транспорт и соцсети влияют на "
+                "повседневную жизнь. Пишет спокойно и практично."
+            ),
+            "persona_topics": [
+                "город",
+                "урбанистика",
+                "технологии",
+                "it",
+                "интернет",
+                "соцсети",
+            ],
+            "persona_offtopic_tolerance": 70,
+            "persona_topic_priority": 75,
+        },
+        {
+            "persona_tone": "analytical",
+            "persona_verbosity": "medium",
+            "persona_style_hint": (
+                "Сдержанный аналитик по безопасности. Обсуждает новости про армию, "
+                "конфликты и геополитику в сухом фактическом стиле, "
+                "без истерики и пропаганды."
+            ),
+            "persona_topics": ["безопасность", "армия", "конфликты", "геополитика", "политика"],
+            "persona_offtopic_tolerance": 55,
+            "persona_topic_priority": 85,
+        },
+        {
+            "persona_tone": "neutral",
+            "persona_verbosity": "medium",
+            "persona_style_hint": (
+                "Любит кино, сериалы и культуру. Пишет небольшие наблюдения о том, "
+                "как события отражаются в медиа и трендах. Без снобизма, но с "
+                "интересом к деталям."
+            ),
+            "persona_topics": ["кино", "сериалы", "культура", "искусство", "медиа"],
+            "persona_offtopic_tolerance": 65,
+            "persona_topic_priority": 80,
         },
         {
             "persona_tone": "neutral",
             "persona_verbosity": "short",
-            "persona_style_hint": "Эмоционально сдержанный, осторожные оценки без резких слов.",
-        },
-        {
-            "persona_tone": "neutral",
-            "persona_verbosity": "short",
-            "persona_style_hint": None,
+            "persona_style_hint": (
+                "Спокойный, немного консервативный читатель. Обращает внимание на "
+                "деньги, курс, цены и социальные последствия. Пишет коротко, "
+                "без споров."
+            ),
+            "persona_topics": ["финансы", "экономика", "общество"],
+            "persona_offtopic_tolerance": 100,
+            "persona_topic_priority": 50,
         },
     ]
     default_persona = personas[-1]
@@ -307,17 +430,34 @@ def _seed_userbot_persona(session: Session, account_names: list[str]) -> None:
         exists = session.execute(
             select(UserbotPersona).where(UserbotPersona.account_name == account_name)
         ).scalar_one_or_none()
-        if exists is not None:
-            continue
         persona = personas[idx] if idx < len(personas) else default_persona
-        session.add(
-            UserbotPersona(
-                account_name=account_name,
-                persona_tone=persona["persona_tone"],
-                persona_verbosity=persona["persona_verbosity"],
-                persona_style_hint=persona["persona_style_hint"],
+        topics = persona["persona_topics"]
+        topics_json = json.dumps(topics, ensure_ascii=True) if topics else None
+        if exists is None:
+            session.add(
+                UserbotPersona(
+                    account_name=account_name,
+                    persona_tone=persona["persona_tone"],
+                    persona_verbosity=persona["persona_verbosity"],
+                    persona_style_hint=persona["persona_style_hint"],
+                    persona_topics=topics_json,
+                    persona_offtopic_tolerance=persona["persona_offtopic_tolerance"],
+                    persona_topic_priority=persona["persona_topic_priority"],
+                )
             )
-        )
+            continue
+        if not exists.persona_tone:
+            exists.persona_tone = persona["persona_tone"]
+        if not exists.persona_verbosity:
+            exists.persona_verbosity = persona["persona_verbosity"]
+        if not exists.persona_style_hint:
+            exists.persona_style_hint = persona["persona_style_hint"]
+        if exists.persona_topics is None and topics_json is not None:
+            exists.persona_topics = topics_json
+        if exists.persona_offtopic_tolerance is None:
+            exists.persona_offtopic_tolerance = persona["persona_offtopic_tolerance"]
+        if exists.persona_topic_priority is None:
+            exists.persona_topic_priority = persona["persona_topic_priority"]
 
 
 @contextmanager

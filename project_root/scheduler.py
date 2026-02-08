@@ -35,6 +35,7 @@ from project_root.db import (
     mark_discussion_reply_sent,
     upsert_discussion_bot_weight,
 )
+from project_root.topics import extract_topics_for_text
 from project_root.models import (
     ChatState,
     DiscussionBotWeight,
@@ -405,7 +406,26 @@ async def _process_discussion_pipeline(
         )
         return sent_any
     replies_count = min(replies_count, len(available))
-    selected_bots = _select_discussion_bots(available, replies_count)
+    try:
+        message_topics = extract_topics_for_text(news_text)
+        effective_weights = _build_effective_weights(
+            session,
+            available,
+            message_topics,
+            pipeline_id=pipeline.id,
+            chat_id=settings.target_chat,
+            message_id=candidates[selected_index - 1].id,
+        )
+    except Exception:
+        logger.warning(
+            "discussion topic detect failed: fallback to base weights (pipeline=%s)",
+            pipeline.name,
+        )
+        effective_weights = None
+    selected_bots = _select_discussion_bots(
+        available, replies_count, effective_weights
+    )
+    selected_bots = _order_bots_for_chain(session, selected_bots)
     # Persona is presentation-only and must not affect decision logic.
     roles = [
         _format_persona_for_prompt(session, primary_account.name)
@@ -462,6 +482,7 @@ async def _process_discussion_pipeline(
     state.last_bot_reply_at = None
     state.last_reply_parent_id = question_message_id
     for idx, reply_text in enumerate(replies, start=1):
+        # Planned chain for a single question; still keep persona roles per order.
         send_at = now + timedelta(minutes=_reply_delay_minutes(idx))
         create_discussion_reply(
             session,
@@ -635,6 +656,101 @@ def _ensure_discussion_weights(
     return list_discussion_bot_weights(session, pipeline_id)
 
 
+def _load_persona_interest(
+    session: Session, account_name: str
+) -> tuple[list[str], int, int]:
+    persona = get_userbot_persona(session, account_name)
+    topics_raw = persona.persona_topics if persona and persona.persona_topics else None
+    topics: list[str] = []
+    if topics_raw:
+        try:
+            data = json.loads(topics_raw)
+            if isinstance(data, list):
+                topics = [str(item) for item in data if str(item)]
+        except Exception:
+            logger.warning(
+                "persona topics parse failed (account=%s)", account_name
+            )
+    topic_priority = (
+        persona.persona_topic_priority
+        if persona and persona.persona_topic_priority is not None
+        else 50
+    )
+    offtopic_tolerance = (
+        persona.persona_offtopic_tolerance
+        if persona and persona.persona_offtopic_tolerance is not None
+        else 50
+    )
+    return topics, int(topic_priority), int(offtopic_tolerance)
+
+
+def _topic_multiplier(
+    message_topics: list[str],
+    persona_topics: list[str],
+    topic_priority: int,
+    offtopic_tolerance: int,
+) -> tuple[float, bool]:
+    # Soft bias only: no hard filters, weights can be softened by tolerance.
+    if not message_topics or not persona_topics:
+        return 1.0, False
+    overlap = len(set(message_topics) & set(persona_topics))
+    if overlap == 0:
+        tolerance = max(0, min(offtopic_tolerance, 100)) / 100.0
+        return max(tolerance, 0.0), False
+    priority = max(0, min(topic_priority, 100)) / 100.0
+    boost = (overlap * priority) * 0.25
+    return 1.0 + boost, True
+
+
+def _build_effective_weights(
+    session: Session,
+    weights: list[DiscussionBotWeight],
+    message_topics: list[str],
+    *,
+    pipeline_id: int,
+    chat_id: str | None,
+    message_id: int | None,
+) -> dict[str, float]:
+    logger.info(
+        "discussion_topic_detected pipeline=%s chat=%s message_id=%s topics=%s",
+        pipeline_id,
+        chat_id,
+        message_id,
+        message_topics,
+    )
+    effective: dict[str, float] = {}
+    for item in weights:
+        persona_topics, topic_priority, offtopic_tolerance = _load_persona_interest(
+            session, item.account_name
+        )
+        multiplier, match = _topic_multiplier(
+            message_topics, persona_topics, topic_priority, offtopic_tolerance
+        )
+        if not message_topics or not persona_topics:
+            reason = "no_topics"
+        elif match:
+            reason = "match"
+        else:
+            reason = "no_match"
+        base_weight = float(item.weight)
+        effective_weight = max(base_weight * multiplier, 0.0)
+        effective[item.account_name] = effective_weight
+        logger.info(
+            "discussion_bot_selection pipeline=%s chat=%s message_id=%s bot=%s "
+            "base=%s multiplier=%.2f effective=%.2f reason=%s persona_topics=%s",
+            pipeline_id,
+            chat_id,
+            message_id,
+            item.account_name,
+            base_weight,
+            multiplier,
+            effective_weight,
+            reason,
+            persona_topics,
+        )
+    return effective
+
+
 def _filter_available_bots(
     weights: list[DiscussionBotWeight], now: datetime
 ) -> list[DiscussionBotWeight]:
@@ -657,16 +773,22 @@ def _filter_available_bots(
 
 
 def _select_discussion_bots(
-    weights: list[DiscussionBotWeight], count: int
+    weights: list[DiscussionBotWeight],
+    count: int,
+    effective_weights: dict[str, float] | None = None,
 ) -> list[DiscussionBotWeight]:
     if count <= 0:
         return []
     if count == 1:
-        return [_weighted_choice(weights)]
+        return [_weighted_choice_with_map(weights, effective_weights)]
     if count == 2:
-        first = _weighted_choice(weights)
+        first = _weighted_choice_with_map(weights, effective_weights)
         remaining = [item for item in weights if item != first]
-        second = _weighted_choice(remaining) if remaining else first
+        second = (
+            _weighted_choice_with_map(remaining, effective_weights)
+            if remaining
+            else first
+        )
         return [first, second]
     ordered = sorted(weights, key=lambda item: item.account_name)
     start = random.randint(0, len(ordered) - 1)
@@ -676,14 +798,22 @@ def _select_discussion_bots(
     return selected
 
 
-def _weighted_choice(weights: list[DiscussionBotWeight]) -> DiscussionBotWeight:
-    total = sum(item.weight for item in weights)
+def _weighted_choice_with_map(
+    weights: list[DiscussionBotWeight], effective_weights: dict[str, float] | None
+) -> DiscussionBotWeight:
+    if effective_weights is None:
+        total = sum(item.weight for item in weights)
+    else:
+        total = sum(effective_weights.get(item.account_name, item.weight) for item in weights)
     if total <= 0:
         return random.choice(weights)
     pick = random.uniform(0, total)
     cumulative = 0.0
     for item in weights:
-        cumulative += item.weight
+        if effective_weights is None:
+            cumulative += item.weight
+        else:
+            cumulative += effective_weights.get(item.account_name, item.weight)
         if pick <= cumulative:
             return item
     return weights[-1]
@@ -718,7 +848,34 @@ def _format_persona_for_prompt(session: Session, account_name: str) -> str:
     )
     if style_hint:
         instructions.append(f"style_hint: {style_hint}")
+    topics, _, _ = _load_persona_interest(session, account_name)
+    if topics:
+        instructions.append(
+            "interests: "
+            + ", ".join(topics)
+            + " (мягкое предпочтение, без жесткой привязки)"
+        )
     return " | ".join(instructions)
+
+
+def _persona_role_rank(session: Session, account_name: str) -> int:
+    persona = get_userbot_persona(session, account_name)
+    tone = persona.persona_tone if persona and persona.persona_tone else "neutral"
+    order = {
+        "analytical": 0,
+        "neutral": 1,
+        "skeptical": 2,
+        "ironic": 3,
+        "emotional": 4,
+    }
+    return order.get(tone, 1)
+
+
+def _order_bots_for_chain(
+    session: Session, bots: list[DiscussionBotWeight]
+) -> list[DiscussionBotWeight]:
+    # Only reorder planned replies; selection probability is unchanged.
+    return sorted(bots, key=lambda item: _persona_role_rank(session, item.account_name))
 
 
 async def _send_due_discussion_replies(
@@ -1054,7 +1211,25 @@ async def _plan_user_reply_for_candidate(
     if not available:
         logger.info("user reply skipped: no available userbots")
         return
-    selected_bots = _select_user_reply_bots(available, replies_count)
+    try:
+        message_topics = extract_topics_for_text(candidate["text"])
+        effective_weights = _build_effective_weights(
+            session,
+            available,
+            message_topics,
+            pipeline_id=pipeline.id,
+            chat_id=candidate["chat_id"],
+            message_id=candidate["message_id"],
+        )
+    except Exception:
+        logger.warning(
+            "user reply topic detect failed: fallback to base weights (pipeline=%s)",
+            pipeline.name,
+        )
+        effective_weights = None
+    selected_bots = _select_user_reply_bots(
+        available, replies_count, effective_weights
+    )
     context_messages = await _fetch_recent_chat_context(
         primary_account.reader_client, candidate["chat_id"], limit=8
     )
@@ -1103,15 +1278,19 @@ async def _plan_user_reply_for_candidate(
 
 
 def _select_user_reply_bots(
-    weights: list[DiscussionBotWeight], count: int
+    weights: list[DiscussionBotWeight],
+    count: int,
+    effective_weights: dict[str, float] | None = None,
 ) -> list[DiscussionBotWeight]:
     if count <= 0:
         return []
     if count == 1:
-        return [_weighted_choice(weights)]
-    first = _weighted_choice(weights)
+        return [_weighted_choice_with_map(weights, effective_weights)]
+    first = _weighted_choice_with_map(weights, effective_weights)
     remaining = [item for item in weights if item != first]
-    second = _weighted_choice(remaining) if remaining else first
+    second = (
+        _weighted_choice_with_map(remaining, effective_weights) if remaining else first
+    )
     return [first, second]
 
 

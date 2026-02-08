@@ -259,3 +259,10 @@ class UserbotPersona(Base):
     persona_tone: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     persona_verbosity: Mapped[Optional[str]] = mapped_column(String, nullable=True)
     persona_style_hint: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    persona_topics: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    persona_offtopic_tolerance: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=50
+    )
+    persona_topic_priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=50
+    )
