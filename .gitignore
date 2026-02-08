@@ -27,3 +27,4 @@ build/
 *.session-journal
 logs/
 openai_system_prompt.txt
+ИНСТРУКЦИИ/
