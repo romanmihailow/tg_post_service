@@ -57,6 +57,7 @@ def init_db(config: Config) -> None:
         _ensure_pipeline_states(session)
         _ensure_discussion_states(session)
         _ensure_global_state(session)
+        _seed_userbot_persona(session, [item.name for item in config.telegram_accounts()])
         session.commit()
 
 
@@ -244,6 +245,79 @@ def _ensure_userbot_persona_schema() -> None:
                 text("ALTER TABLE userbot_persona ADD COLUMN persona_style_hint TEXT")
             )
         connection.commit()
+
+
+def _seed_userbot_persona(session: Session, account_names: list[str]) -> None:
+    if not account_names:
+        return
+    personas = [
+        {
+            "persona_tone": "analytical",
+            "persona_verbosity": "medium",
+            "persona_style_hint": "Ведущий, аналитично задаёт вопросы и направляет дискуссию.",
+        },
+        {
+            "persona_tone": "analytical",
+            "persona_verbosity": "medium",
+            "persona_style_hint": "Вдумчивый комментатор, объясняет контекст без эмоций.",
+        },
+        {
+            "persona_tone": "skeptical",
+            "persona_verbosity": "short",
+            "persona_style_hint": "Короткие сомнения и вторая сторона вопроса без агрессии.",
+        },
+        {
+            "persona_tone": "ironic",
+            "persona_verbosity": "short",
+            "persona_style_hint": "Лёгкая ирония без токсичности и нападок.",
+        },
+        {
+            "persona_tone": "neutral",
+            "persona_verbosity": "short",
+            "persona_style_hint": "Простые бытовые формулировки, как у обычного читателя.",
+        },
+        {
+            "persona_tone": "analytical",
+            "persona_verbosity": "medium",
+            "persona_style_hint": "Технарь, иногда уходит в детали и механику.",
+        },
+        {
+            "persona_tone": "emotional",
+            "persona_verbosity": "medium",
+            "persona_style_hint": "Гуманитарный взгляд, акцент на социальном аспекте.",
+        },
+        {
+            "persona_tone": "analytical",
+            "persona_verbosity": "short",
+            "persona_style_hint": "Прагматик, говорит о выгодах и практических последствиях.",
+        },
+        {
+            "persona_tone": "neutral",
+            "persona_verbosity": "short",
+            "persona_style_hint": "Эмоционально сдержанный, осторожные оценки без резких слов.",
+        },
+        {
+            "persona_tone": "neutral",
+            "persona_verbosity": "short",
+            "persona_style_hint": None,
+        },
+    ]
+    default_persona = personas[-1]
+    for idx, account_name in enumerate(sorted(account_names)):
+        exists = session.execute(
+            select(UserbotPersona).where(UserbotPersona.account_name == account_name)
+        ).scalar_one_or_none()
+        if exists is not None:
+            continue
+        persona = personas[idx] if idx < len(personas) else default_persona
+        session.add(
+            UserbotPersona(
+                account_name=account_name,
+                persona_tone=persona["persona_tone"],
+                persona_verbosity=persona["persona_verbosity"],
+                persona_style_hint=persona["persona_style_hint"],
+            )
+        )
 
 
 @contextmanager
