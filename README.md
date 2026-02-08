@@ -1,4 +1,4 @@
-# Telegram News Reposter
+# Telegram News Reposter__
 
 Сервис читает новости из указанных Telegram-каналов, перефразирует их через OpenAI и публикует в ваш канал текст или текст + изображение.
 
