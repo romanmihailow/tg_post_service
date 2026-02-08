@@ -2,6 +2,11 @@ services:
   tg_post_service:
     image: ghcr.io/${IMAGE_REPO:-your_org/your_repo}:latest
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "pgrep -f \"python main.py\" >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     env_file:
       - .env
     working_dir: /app
