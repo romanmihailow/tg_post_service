@@ -432,7 +432,7 @@ def _seed_userbot_persona(session: Session, account_names: list[str]) -> None:
         ).scalar_one_or_none()
         persona = personas[idx] if idx < len(personas) else default_persona
         topics = persona["persona_topics"]
-        topics_json = json.dumps(topics, ensure_ascii=True) if topics else None
+        topics_json = json.dumps(topics, ensure_ascii=False) if topics else None
         if exists is None:
             session.add(
                 UserbotPersona(
