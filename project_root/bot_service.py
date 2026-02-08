@@ -45,6 +45,7 @@ from project_root.db import (
     get_pipeline_by_name,
     get_pipeline_sources,
     get_session,
+    get_userbot_persona,
     mark_invite_code_used,
     mark_invite_used,
     update_pipeline_destination,
@@ -52,6 +53,7 @@ from project_root.db import (
     update_pipeline_mode,
     remove_pipeline_source,
     toggle_pipeline_enabled,
+    upsert_userbot_persona,
 )
 
 logger = logging.getLogger(__name__)
@@ -69,11 +71,12 @@ ROLE_PERMISSIONS = {
         "delete",
         "behavior",
         "prompt",
+        "persona",
         "logs",
         "invite",
     },
-    "admin": {"view", "create", "edit", "behavior", "prompt", "logs", "invite"},
-    "editor": {"view", "create", "edit", "delete", "prompt"},
+    "admin": {"view", "create", "edit", "behavior", "prompt", "persona", "logs", "invite"},
+    "editor": {"view", "create", "edit", "delete", "prompt", "persona"},
     "viewer": {"view"},
 }
 
@@ -146,6 +149,7 @@ MENU_PIPELINES = "pipelines"
 MENU_PIPELINE = "pipeline"
 MENU_BEHAVIOR = "behavior"
 MENU_BEHAVIOR_LEVEL = "behavior_level"
+MENU_PERSONA = "persona"
 MENU_LOGS = "logs"
 
 HEADER_TITLES = {
@@ -156,6 +160,7 @@ HEADER_TITLES = {
     MENU_PIPELINE: "⚙️ Пайплайн",
     MENU_BEHAVIOR: "🧠 Поведение",
     MENU_BEHAVIOR_LEVEL: "🧠 Поведение",
+    MENU_PERSONA: "🎭 Личность",
     MENU_LOGS: "📁 Логи",
 }
 
@@ -222,6 +227,8 @@ def _account_menu_keyboard(
         actions.append("Поведение")
     if has_account and _has_permission(config, user_id, "prompt"):
         actions.append("Промпт")
+    if has_account and _has_permission(config, user_id, "persona"):
+        actions.append("Личность")
     if actions:
         rows.append(actions)
     rows.append(["Назад", "Меню", "Статус"])
@@ -310,6 +317,59 @@ def _interval_keyboard(current_minutes: int | None = None) -> ReplyKeyboardMarku
         else:
             row.append(option)
     return ReplyKeyboardMarkup([row, ["Назад", "Меню", "Статус"]], resize_keyboard=True)
+
+
+def _persona_menu_keyboard() -> ReplyKeyboardMarkup:
+    return ReplyKeyboardMarkup(
+        [["Тон", "Краткость"], ["Стиль"], ["Сбросить"], ["Назад", "Меню", "Статус"]],
+        resize_keyboard=True,
+    )
+
+
+def _persona_tone_keyboard(current: str | None) -> ReplyKeyboardMarkup:
+    options = [
+        ("neutral", "Нейтральный"),
+        ("analytical", "Аналитичный"),
+        ("emotional", "Эмоциональный"),
+        ("ironic", "Ироничный"),
+        ("skeptical", "Скептичный"),
+    ]
+    row = []
+    for key, label in options:
+        if current == key:
+            row.append(f"{label} ✓")
+        else:
+            row.append(label)
+    return ReplyKeyboardMarkup([row, ["Назад", "Меню", "Статус"]], resize_keyboard=True)
+
+
+def _persona_verbosity_keyboard(current: str | None) -> ReplyKeyboardMarkup:
+    options = [("short", "Коротко"), ("medium", "Средне")]
+    row = []
+    for key, label in options:
+        if current == key:
+            row.append(f"{label} ✓")
+        else:
+            row.append(label)
+    return ReplyKeyboardMarkup([row, ["Назад", "Меню", "Статус"]], resize_keyboard=True)
+
+
+def _parse_persona_tone(text: str) -> str | None:
+    cleaned = text.replace(" ✓", "").strip().lower()
+    mapping = {
+        "нейтральный": "neutral",
+        "аналитичный": "analytical",
+        "эмоциональный": "emotional",
+        "ироничный": "ironic",
+        "скептичный": "skeptical",
+    }
+    return mapping.get(cleaned)
+
+
+def _parse_persona_verbosity(text: str) -> str | None:
+    cleaned = text.replace(" ✓", "").strip().lower()
+    mapping = {"коротко": "short", "средне": "medium"}
+    return mapping.get(cleaned)
 
 
 def _parse_level_from_label(text: str) -> int | None:
@@ -549,6 +609,32 @@ def _format_behavior_levels(behavior: BehaviorProfileConfig | None) -> str:
         f"- нагрузка: {behavior.group_load_level or '-'}\n"
         f"- осторожность: {behavior.group_safety_level or '-'}\n"
         f"- контент: {behavior.group_content_level or '-'}"
+    )
+
+
+def _format_persona_summary(account_name: str) -> str:
+    with get_session() as session:
+        persona = get_userbot_persona(session, account_name)
+    tone_key = persona.persona_tone if persona and persona.persona_tone else "neutral"
+    verbosity = (
+        persona.persona_verbosity if persona and persona.persona_verbosity else "short"
+    )
+    tone_labels = {
+        "neutral": "нейтральный",
+        "analytical": "аналитичный",
+        "emotional": "эмоциональный",
+        "ironic": "ироничный",
+        "skeptical": "скептичный",
+    }
+    verbosity_labels = {"short": "коротко", "medium": "средне"}
+    style_hint = (
+        persona.persona_style_hint if persona and persona.persona_style_hint else "-"
+    )
+    return (
+        "Текущие настройки:\n"
+        f"- тон: {tone_labels.get(tone_key, tone_key)}\n"
+        f"- краткость: {verbosity_labels.get(verbosity, verbosity)}\n"
+        f"- стиль: {style_hint}"
     )
 
 
@@ -1000,6 +1086,21 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             context.user_data["awaiting"] = {"type": "prompt_update"}
             await update.message.reply_text("Введите новый текст промпта:")
             return
+        if text == "Личность":
+            if not _has_permission(config, user_id, "persona"):
+                await update.message.reply_text("Недостаточно прав.")
+                return
+            await update.message.reply_text(
+                f"🎭 Личность\n{_format_persona_summary(account_name)}"
+            )
+            await _set_menu(
+                update,
+                context,
+                MENU_PERSONA,
+                "",
+                _persona_menu_keyboard(),
+            )
+            return
 
     if menu == MENU_PIPELINES:
         pipeline_names = _list_pipeline_names(
@@ -1264,6 +1365,121 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await _apply_behavior_level(update, context, level, accounts_runtime)
             return
 
+    if menu == MENU_PERSONA:
+        account_name = context.user_data.get("account")
+        if not account_name:
+            await update.message.reply_text("Сначала выберите аккаунт.")
+            return
+        if text == "Тон":
+            await update.message.reply_text(
+                f"🎭 Личность\n{_format_persona_summary(account_name)}"
+            )
+            with get_session() as session:
+                persona = get_userbot_persona(session, account_name)
+            current = persona.persona_tone if persona and persona.persona_tone else "neutral"
+            await _set_menu(
+                update,
+                context,
+                MENU_PERSONA,
+                "Выберите тон:",
+                _persona_tone_keyboard(current),
+            )
+            return
+        if text == "Краткость":
+            await update.message.reply_text(
+                f"🎭 Личность\n{_format_persona_summary(account_name)}"
+            )
+            with get_session() as session:
+                persona = get_userbot_persona(session, account_name)
+            current = (
+                persona.persona_verbosity if persona and persona.persona_verbosity else "short"
+            )
+            await _set_menu(
+                update,
+                context,
+                MENU_PERSONA,
+                "Выберите краткость:",
+                _persona_verbosity_keyboard(current),
+            )
+            return
+        if text == "Стиль":
+            context.user_data["awaiting"] = {"type": "persona_style_hint"}
+            await update.message.reply_text(
+                "Введите подсказку стиля (или '-' чтобы очистить):"
+            )
+            return
+        if text == "Сбросить":
+            with get_session() as session:
+                upsert_userbot_persona(
+                    session,
+                    account_name=account_name,
+                    persona_tone=None,
+                    persona_verbosity=None,
+                    persona_style_hint=None,
+                )
+                session.commit()
+            _audit_log("persona.reset", context.user_data.get("user_id"), account_name)
+            await update.message.reply_text(
+                "✅ Личность сброшена к значениям по умолчанию."
+            )
+            return
+        tone = _parse_persona_tone(text)
+        if tone is not None:
+            with get_session() as session:
+                persona = get_userbot_persona(session, account_name)
+                upsert_userbot_persona(
+                    session,
+                    account_name=account_name,
+                    persona_tone=tone,
+                    persona_verbosity=(
+                        persona.persona_verbosity if persona and persona.persona_verbosity else None
+                    ),
+                    persona_style_hint=(
+                        persona.persona_style_hint if persona and persona.persona_style_hint else None
+                    ),
+                )
+                session.commit()
+            tone_labels = {
+                "neutral": "нейтральный",
+                "analytical": "аналитичный",
+                "emotional": "эмоциональный",
+                "ironic": "ироничный",
+                "skeptical": "скептичный",
+            }
+            _audit_log(
+                "persona.tone",
+                context.user_data.get("user_id"),
+                f"{account_name} -> {tone}",
+            )
+            await update.message.reply_text(f"✅ Тон: {tone_labels.get(tone, tone)}")
+            return
+        verbosity = _parse_persona_verbosity(text)
+        if verbosity is not None:
+            with get_session() as session:
+                persona = get_userbot_persona(session, account_name)
+                upsert_userbot_persona(
+                    session,
+                    account_name=account_name,
+                    persona_tone=(
+                        persona.persona_tone if persona and persona.persona_tone else None
+                    ),
+                    persona_verbosity=verbosity,
+                    persona_style_hint=(
+                        persona.persona_style_hint if persona and persona.persona_style_hint else None
+                    ),
+                )
+                session.commit()
+            verbosity_labels = {"short": "коротко", "medium": "средне"}
+            _audit_log(
+                "persona.verbosity",
+                context.user_data.get("user_id"),
+                f"{account_name} -> {verbosity}",
+            )
+            await update.message.reply_text(
+                f"✅ Краткость: {verbosity_labels.get(verbosity, verbosity)}"
+            )
+            return
+
     if menu == MENU_LOGS:
         if text == "Ошибки":
             if not _has_permission(config, user_id, "logs"):
@@ -1303,6 +1519,19 @@ async def _go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         )
         return
     if menu == MENU_BEHAVIOR:
+        await _set_menu(
+            update,
+            context,
+            MENU_ACCOUNT,
+            "",
+            _account_menu_keyboard(
+                config,
+                user_id=context.user_data.get("user_id"),
+                has_account=bool(context.user_data.get("account")),
+            ),
+        )
+        return
+    if menu == MENU_PERSONA:
         await _set_menu(
             update,
             context,
@@ -1423,6 +1652,9 @@ async def _handle_awaiting(
         return True
     if awaiting.get("type") == "prompt_update":
         await _update_prompt(update, context, text)
+        return True
+    if awaiting.get("type") == "persona_style_hint":
+        await _update_persona_style_hint(update, context, text)
         return True
     if awaiting.get("type") == "invite_code":
         await _handle_invite_code(update, context, text)
@@ -1938,6 +2170,51 @@ async def _update_prompt(
         f"{account_name} -> {prompt_path}",
     )
     await update.message.reply_text(f"✅ Промпт: {prompt_path}")
+
+
+async def _update_persona_style_hint(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    context.user_data.pop("awaiting", None)
+    account_name = context.user_data.get("account")
+    if not account_name:
+        await update.message.reply_text("Сначала выберите аккаунт.")
+        return
+    config: Config = context.bot_data["config"]
+    user_id = context.user_data.get("user_id")
+    if not _can_access_account(config, user_id, account_name):
+        await update.message.reply_text("Недостаточно прав.")
+        return
+    hint = text.strip()
+    if hint == "-" or not hint:
+        hint_value = None
+    else:
+        hint_value = hint
+    with get_session() as session:
+        persona = get_userbot_persona(session, account_name)
+        upsert_userbot_persona(
+            session,
+            account_name=account_name,
+            persona_tone=persona.persona_tone if persona and persona.persona_tone else None,
+            persona_verbosity=(
+                persona.persona_verbosity if persona and persona.persona_verbosity else None
+            ),
+            persona_style_hint=hint_value,
+        )
+        session.commit()
+    _audit_log(
+        "persona.style_hint",
+        context.user_data.get("user_id"),
+        f"{account_name} -> {hint_value or '-'}",
+    )
+    await update.message.reply_text("✅ Стиль обновлён.")
+    await _set_menu(
+        update,
+        context,
+        MENU_PERSONA,
+        "",
+        _persona_menu_keyboard(),
+    )
 
 
 async def _create_pipeline(
