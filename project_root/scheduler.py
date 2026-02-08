@@ -336,7 +336,7 @@ async def _process_discussion_pipeline(
         if settings.inactivity_pause_minutes > 0
         else 0
     )
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     now_local = _localize_time(now, settings.activity_timezone)
     windows = _resolve_activity_windows(settings, now_local)
     if windows and not _is_within_windows(now_local, windows):
