@@ -1081,7 +1081,7 @@ async def _process_live_replies_pipeline(
     settings = get_discussion_settings(session, pipeline.id)
     if not settings or not settings.target_chat:
         return
-    now = datetime.utcnow()
+    now = datetime.now(timezone.utc)
     now_local = _localize_time(now, settings.activity_timezone)
     windows = _resolve_activity_windows(settings, now_local)
     if windows and not _is_within_windows(now_local, windows):
