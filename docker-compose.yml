@@ -13,3 +13,5 @@ services:
     volumes:
       - ./logs:/app/logs
       - ./tg_post_service.db:/app/tg_post_service.db
+      - ./openai_system_prompt.txt:/app/openai_system_prompt.txt:ro
+      - ./sessions:/app/sessions

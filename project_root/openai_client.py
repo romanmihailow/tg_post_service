@@ -186,40 +186,6 @@ class OpenAIClient:
         )
         return text.strip(), in_tokens, out_tokens, total_tokens
 
-
-def _log_openai_usage(
-    *,
-    kind: str,
-    model: str,
-    pipeline_id: int | None,
-    chat_id: str | None,
-    input_tokens: int,
-    output_tokens: int,
-    total_tokens: int,
-    extra: dict[str, Any],
-) -> None:
-    if input_tokens == 0 and output_tokens == 0 and total_tokens == 0:
-        logger.warning(
-            "openai_usage missing usage kind=%s model=%s pipeline=%s chat=%s extra=%s",
-            kind,
-            model,
-            pipeline_id,
-            chat_id,
-            extra,
-        )
-        return
-    logger.info(
-        "openai_usage kind=%s model=%s pipeline=%s chat=%s input=%d output=%d total=%d extra=%s",
-        kind,
-        model,
-        pipeline_id,
-        chat_id,
-        input_tokens,
-        output_tokens,
-        total_tokens,
-        extra,
-    )
-
     def _responses_text(
         self, system_prompt: str, user_text: str
     ) -> Tuple[str, int, int, int]:
@@ -305,3 +271,37 @@ def _log_openai_usage(
                 if attempt < retries:
                     time.sleep(2**attempt)
         raise RuntimeError("OpenAI request failed after retries") from last_error
+
+
+def _log_openai_usage(
+    *,
+    kind: str,
+    model: str,
+    pipeline_id: int | None,
+    chat_id: str | None,
+    input_tokens: int,
+    output_tokens: int,
+    total_tokens: int,
+    extra: dict[str, Any],
+) -> None:
+    if input_tokens == 0 and output_tokens == 0 and total_tokens == 0:
+        logger.warning(
+            "openai_usage missing usage kind=%s model=%s pipeline=%s chat=%s extra=%s",
+            kind,
+            model,
+            pipeline_id,
+            chat_id,
+            extra,
+        )
+        return
+    logger.info(
+        "openai_usage kind=%s model=%s pipeline=%s chat=%s input=%d output=%d total=%d extra=%s",
+        kind,
+        model,
+        pipeline_id,
+        chat_id,
+        input_tokens,
+        output_tokens,
+        total_tokens,
+        extra,
+    )
