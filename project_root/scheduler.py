@@ -326,6 +326,16 @@ async def _process_discussion_pipeline(
     if not settings.target_chat:
         logger.warning("Discussion pipeline %s: target chat is empty", pipeline.name)
         return False
+    discussion_level, _ = _get_account_activity_levels(config, pipeline.account_name)
+    effective_min_interval = _scale_minutes(settings.min_interval_minutes, discussion_level)
+    effective_max_interval = _scale_minutes(settings.max_interval_minutes, discussion_level)
+    if effective_max_interval < effective_min_interval:
+        effective_max_interval = effective_min_interval
+    effective_inactivity = (
+        _scale_minutes(settings.inactivity_pause_minutes, discussion_level, min_value=0)
+        if settings.inactivity_pause_minutes > 0
+        else 0
+    )
     now = datetime.utcnow()
     now_local = _localize_time(now, settings.activity_timezone)
     windows = _resolve_activity_windows(settings, now_local)
@@ -352,12 +362,12 @@ async def _process_discussion_pipeline(
     if state.expires_at and now >= state.expires_at:
         _reset_discussion_state(state)
         session.flush()
-    if settings.inactivity_pause_minutes > 0:
+    if effective_inactivity > 0:
         active = await _discussion_chat_active(
             primary_account.reader_client,
             settings.target_chat,
             await _collect_bot_user_ids(accounts),
-            settings.inactivity_pause_minutes,
+            effective_inactivity,
         )
         if not active:
             logger.info(
@@ -481,9 +491,13 @@ async def _process_discussion_pipeline(
     state.replies_sent = 0
     state.last_bot_reply_at = None
     state.last_reply_parent_id = question_message_id
+    delay_factor = 1.5 - (discussion_level / 100.0)
+    delay_factor = max(0.5, min(1.5, delay_factor))
     for idx, reply_text in enumerate(replies, start=1):
         # Planned chain for a single question; still keep persona roles per order.
-        send_at = now + timedelta(minutes=_reply_delay_minutes(idx))
+        base_delay = _reply_delay_minutes(idx)
+        adjusted_delay = max(1, int(round(base_delay * delay_factor)))
+        send_at = now + timedelta(minutes=adjusted_delay)
         create_discussion_reply(
             session,
             pipeline_id=pipeline.id,
@@ -512,7 +526,7 @@ async def _process_discussion_pipeline(
     )
     state.next_due_at = now + timedelta(
         minutes=random.randint(
-            settings.min_interval_minutes, settings.max_interval_minutes
+            effective_min_interval, effective_max_interval
         )
     )
     logger.info(
@@ -749,6 +763,36 @@ def _build_effective_weights(
             persona_topics,
         )
     return effective
+
+
+def _activity_percent(value: int | None) -> int:
+    if value is None:
+        return 50
+    return max(0, min(int(value), 100))
+
+
+def _activity_factor(percent: int) -> float:
+    # 0 -> 0.5, 50 -> 1.0, 100 -> 1.5
+    return 0.5 + (percent / 100.0)
+
+
+def _scale_minutes(base_minutes: int, percent: int, min_value: int = 5) -> int:
+    factor = 1.5 - (percent / 100.0)  # 0 -> 1.5, 50 -> 1.0, 100 -> 0.5
+    factor = max(0.5, min(1.5, factor))
+    return max(min_value, int(round(base_minutes * factor)))
+
+
+def _get_account_activity_levels(
+    config: Config, account_name: str
+) -> tuple[int, int]:
+    discussion = 50
+    replies = 50
+    for account in config.telegram_accounts():
+        if account.name == account_name:
+            discussion = _activity_percent(account.discussion_activity_percent)
+            replies = _activity_percent(account.user_reply_activity_percent)
+            break
+    return discussion, replies
 
 
 def _filter_available_bots(
@@ -1046,6 +1090,7 @@ async def _process_live_replies_pipeline(
             pipeline.name,
         )
         await _send_due_user_replies(
+            config,
             accounts,
             primary_account,
             session,
@@ -1056,6 +1101,7 @@ async def _process_live_replies_pipeline(
         )
         return
     await _send_due_user_replies(
+        config,
         accounts,
         primary_account,
         session,
@@ -1175,15 +1221,21 @@ async def _plan_user_reply_for_candidate(
 ) -> None:
     now = datetime.utcnow()
     today = now.strftime("%Y-%m-%d")
+    _, reply_level = _get_account_activity_levels(config, pipeline.account_name)
+    reply_factor = _activity_factor(reply_level)
     if chat_state.replies_today_date != today:
         chat_state.replies_today = 0
         chat_state.replies_today_date = today
-    if chat_state.replies_today >= settings.max_auto_replies_per_chat_per_day:
+    max_replies = settings.max_auto_replies_per_chat_per_day
+    if max_replies > 0:
+        max_replies = max(1, int(round(max_replies * reply_factor)))
+    if max_replies > 0 and chat_state.replies_today >= max_replies:
         logger.info("user reply skipped: global limit reached")
         return
     base_prob = random.uniform(0.4, 0.6)
     boosted = candidate["is_reply_to_bot"] or "?" in candidate["text"]
     decision_prob = 0.8 if boosted else base_prob
+    decision_prob = min(0.95, decision_prob * reply_factor)
     if random.random() > decision_prob:
         logger.info("user reply skipped: probability")
         return
@@ -1195,12 +1247,17 @@ async def _plan_user_reply_for_candidate(
         if age_minutes > settings.user_reply_max_age_minutes:
             logger.info("user reply skipped: message too old")
             return
-    if settings.inactivity_pause_minutes > 0 and chat_state.last_human_message_at:
+    effective_inactivity = (
+        _scale_minutes(settings.inactivity_pause_minutes, reply_level, min_value=0)
+        if settings.inactivity_pause_minutes > 0
+        else 0
+    )
+    if effective_inactivity > 0 and chat_state.last_human_message_at:
         last_human = chat_state.last_human_message_at
         if last_human.tzinfo is None:
             last_human = last_human.replace(tzinfo=timezone.utc)
         delta = now - last_human
-        if delta.total_seconds() > settings.inactivity_pause_minutes * 60:
+        if delta.total_seconds() > effective_inactivity * 60:
             logger.info("user reply skipped: inactive chat")
             return
     replies_count = random.choices([1, 2], weights=[80, 20])[0]
@@ -1304,6 +1361,7 @@ async def _fetch_recent_chat_context(client, chat_id: str, limit: int = 8) -> li
 
 
 async def _send_due_user_replies(
+    config: Config,
     accounts: dict[str, AccountRuntime],
     primary_account: AccountRuntime,
     session: Session,
@@ -1323,9 +1381,15 @@ async def _send_due_user_replies(
             mark_discussion_reply_cancelled(session, reply, "outside activity window")
         return
     chat_state = get_chat_state(session, pipeline.id, settings.target_chat)
-    if settings.inactivity_pause_minutes > 0 and chat_state.last_human_message_at:
+    _, reply_level = _get_account_activity_levels(config, pipeline.account_name)
+    effective_inactivity = (
+        _scale_minutes(settings.inactivity_pause_minutes, reply_level, min_value=0)
+        if settings.inactivity_pause_minutes > 0
+        else 0
+    )
+    if effective_inactivity > 0 and chat_state.last_human_message_at:
         delta = now - chat_state.last_human_message_at.replace(tzinfo=timezone.utc)
-        if delta.total_seconds() > settings.inactivity_pause_minutes * 60:
+        if delta.total_seconds() > effective_inactivity * 60:
             for reply in due_replies:
                 mark_discussion_reply_cancelled(session, reply, "inactive chat")
                 logger.info("user reply cancelled: inactive chat")

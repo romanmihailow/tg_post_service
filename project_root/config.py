@@ -23,6 +23,18 @@ def _parse_profile_level(value: object) -> Optional[int]:
     return numeric
 
 
+def _parse_activity_percent(value: object) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        numeric = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("Activity percent must be an integer") from exc
+    if numeric < 0 or numeric > 100:
+        raise ValueError("Activity percent must be between 0 and 100")
+    return numeric
+
+
 class TelegramCredentials(BaseModel):
     api_id: int
     api_hash: str
@@ -70,6 +82,15 @@ class TelegramAccountConfig(BaseModel):
     writer: Optional[TelegramCredentials] = Field(default=None)
     openai: Optional[OpenAIAccountConfig] = Field(default=None)
     behavior: Optional[BehaviorProfileConfig] = Field(default=None)
+    discussion_activity_percent: Optional[int] = Field(default=None)
+    user_reply_activity_percent: Optional[int] = Field(default=None)
+
+    _validate_discussion_activity = field_validator(
+        "discussion_activity_percent", mode="before"
+    )(_parse_activity_percent)
+    _validate_user_reply_activity = field_validator(
+        "user_reply_activity_percent", mode="before"
+    )(_parse_activity_percent)
 
 
 @dataclass

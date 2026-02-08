@@ -72,11 +72,12 @@ ROLE_PERMISSIONS = {
         "behavior",
         "prompt",
         "persona",
+        "activity",
         "logs",
         "invite",
     },
-    "admin": {"view", "create", "edit", "behavior", "prompt", "persona", "logs", "invite"},
-    "editor": {"view", "create", "edit", "delete", "prompt", "persona"},
+    "admin": {"view", "create", "edit", "behavior", "prompt", "persona", "activity", "logs", "invite"},
+    "editor": {"view", "create", "edit", "delete", "prompt", "persona", "activity"},
     "viewer": {"view"},
 }
 
@@ -150,6 +151,8 @@ MENU_PIPELINE = "pipeline"
 MENU_BEHAVIOR = "behavior"
 MENU_BEHAVIOR_LEVEL = "behavior_level"
 MENU_PERSONA = "persona"
+MENU_ACTIVITY = "activity"
+MENU_ACTIVITY_LEVEL = "activity_level"
 MENU_LOGS = "logs"
 
 HEADER_TITLES = {
@@ -161,6 +164,8 @@ HEADER_TITLES = {
     MENU_BEHAVIOR: "🧠 Поведение",
     MENU_BEHAVIOR_LEVEL: "🧠 Поведение",
     MENU_PERSONA: "🎭 Личность",
+    MENU_ACTIVITY: "⚡ Активность",
+    MENU_ACTIVITY_LEVEL: "⚡ Активность",
     MENU_LOGS: "📁 Логи",
 }
 
@@ -229,6 +234,8 @@ def _account_menu_keyboard(
         actions.append("Промпт")
     if has_account and _has_permission(config, user_id, "persona"):
         actions.append("Личность")
+    if has_account and _has_permission(config, user_id, "activity"):
+        actions.append("Активность")
     if actions:
         rows.append(actions)
     rows.append(["Назад", "Меню", "Статус"])
@@ -319,6 +326,23 @@ def _interval_keyboard(current_minutes: int | None = None) -> ReplyKeyboardMarku
     return ReplyKeyboardMarkup([row, ["Назад", "Меню", "Статус"]], resize_keyboard=True)
 
 
+def _activity_level_keyboard(current_percent: int | None = None) -> ReplyKeyboardMarkup:
+    options = ["1 (10%)", "2 (30%)", "3 (50%)", "4 (70%)", "5 (вручную)"]
+    row = []
+    for option in options:
+        if current_percent == 10 and option.startswith("1"):
+            row.append(f"{option} ✓")
+        elif current_percent == 30 and option.startswith("2"):
+            row.append(f"{option} ✓")
+        elif current_percent == 50 and option.startswith("3"):
+            row.append(f"{option} ✓")
+        elif current_percent == 70 and option.startswith("4"):
+            row.append(f"{option} ✓")
+        else:
+            row.append(option)
+    return ReplyKeyboardMarkup([row, ["Назад", "Меню", "Статус"]], resize_keyboard=True)
+
+
 def _persona_menu_keyboard() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         [["Тон", "Краткость"], ["Стиль"], ["Сбросить"], ["Назад", "Меню", "Статус"]],
@@ -381,6 +405,19 @@ def _parse_level_from_label(text: str) -> int | None:
         value = int(digit)
         if 1 <= value <= 5:
             return value
+    return None
+
+
+def _parse_activity_level_from_label(text: str) -> int | None:
+    cleaned = text.replace(" ✓", "").strip()
+    if cleaned.startswith("1"):
+        return 10
+    if cleaned.startswith("2"):
+        return 30
+    if cleaned.startswith("3"):
+        return 50
+    if cleaned.startswith("4"):
+        return 70
     return None
 
 
@@ -635,6 +672,18 @@ def _format_persona_summary(account_name: str) -> str:
         f"- тон: {tone_labels.get(tone_key, tone_key)}\n"
         f"- краткость: {verbosity_labels.get(verbosity, verbosity)}\n"
         f"- стиль: {style_hint}"
+    )
+
+
+def _format_activity_levels(account: TelegramAccountConfig) -> str:
+    discussion = account.discussion_activity_percent
+    replies = account.user_reply_activity_percent
+    discussion_text = f"{discussion}%" if discussion is not None else "50% (по умолчанию)"
+    replies_text = f"{replies}%" if replies is not None else "50% (по умолчанию)"
+    return (
+        "Текущие уровни:\n"
+        f"- обсуждения: {discussion_text}\n"
+        f"- ответы пользователям: {replies_text}"
     )
 
 
@@ -1101,6 +1150,28 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 _persona_menu_keyboard(),
             )
             return
+        if text == "Активность":
+            if not _has_permission(config, user_id, "activity"):
+                await update.message.reply_text("Недостаточно прав.")
+                return
+            account = _get_account_config(context, account_name)
+            if not account:
+                await update.message.reply_text("Аккаунт не найден.")
+                return
+            await update.message.reply_text(
+                f"⚡ Активность\n{_format_activity_levels(account)}"
+            )
+            await _set_menu(
+                update,
+                context,
+                MENU_ACTIVITY,
+                "",
+                ReplyKeyboardMarkup(
+                    [["Обсуждения", "Ответы"], ["Назад", "Меню", "Статус"]],
+                    resize_keyboard=True,
+                ),
+            )
+            return
 
     if menu == MENU_PIPELINES:
         pipeline_names = _list_pipeline_names(
@@ -1480,6 +1551,54 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
+    if menu == MENU_ACTIVITY:
+        account_name = context.user_data.get("account")
+        if not account_name:
+            await update.message.reply_text("Сначала выберите аккаунт.")
+            return
+        account = _get_account_config(context, account_name)
+        if not account:
+            await update.message.reply_text("Аккаунт не найден.")
+            return
+        if text == "Обсуждения":
+            context.user_data["activity_kind"] = "discussion"
+            current = account.discussion_activity_percent
+            await update.message.reply_text(
+                f"⚡ Активность\nТекущий уровень: {current if current is not None else 50}%"
+            )
+            await _set_menu(
+                update,
+                context,
+                MENU_ACTIVITY_LEVEL,
+                "Уровень обсуждений:",
+                _activity_level_keyboard(current),
+            )
+            return
+        if text == "Ответы":
+            context.user_data["activity_kind"] = "replies"
+            current = account.user_reply_activity_percent
+            await update.message.reply_text(
+                f"⚡ Активность\nТекущий уровень: {current if current is not None else 50}%"
+            )
+            await _set_menu(
+                update,
+                context,
+                MENU_ACTIVITY_LEVEL,
+                "Уровень ответов:",
+                _activity_level_keyboard(current),
+            )
+            return
+
+    if menu == MENU_ACTIVITY_LEVEL:
+        level = _parse_activity_level_from_label(text)
+        if level is not None:
+            await _update_activity_level(update, context, level)
+            return
+        if text.replace(" ✓", "") == "5 (вручную)":
+            context.user_data["awaiting"] = {"type": "activity_manual"}
+            await update.message.reply_text("Введите значение 0–100:")
+            return
+
     if menu == MENU_LOGS:
         if text == "Ошибки":
             if not _has_permission(config, user_id, "logs"):
@@ -1541,6 +1660,31 @@ async def _go_back(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
                 config,
                 user_id=context.user_data.get("user_id"),
                 has_account=bool(context.user_data.get("account")),
+            ),
+        )
+        return
+    if menu == MENU_ACTIVITY:
+        await _set_menu(
+            update,
+            context,
+            MENU_ACCOUNT,
+            "",
+            _account_menu_keyboard(
+                config,
+                user_id=context.user_data.get("user_id"),
+                has_account=bool(context.user_data.get("account")),
+            ),
+        )
+        return
+    if menu == MENU_ACTIVITY_LEVEL:
+        await _set_menu(
+            update,
+            context,
+            MENU_ACTIVITY,
+            "",
+            ReplyKeyboardMarkup(
+                [["Обсуждения", "Ответы"], ["Назад", "Меню", "Статус"]],
+                resize_keyboard=True,
             ),
         )
         return
@@ -1655,6 +1799,9 @@ async def _handle_awaiting(
         return True
     if awaiting.get("type") == "persona_style_hint":
         await _update_persona_style_hint(update, context, text)
+        return True
+    if awaiting.get("type") == "activity_manual":
+        await _update_activity_level(update, context, text)
         return True
     if awaiting.get("type") == "invite_code":
         await _handle_invite_code(update, context, text)
@@ -2214,6 +2361,58 @@ async def _update_persona_style_hint(
         MENU_PERSONA,
         "",
         _persona_menu_keyboard(),
+    )
+
+
+async def _update_activity_level(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, value: int | str
+) -> None:
+    context.user_data.pop("awaiting", None)
+    account_name = context.user_data.get("account")
+    if not account_name:
+        await update.message.reply_text("Сначала выберите аккаунт.")
+        return
+    kind = context.user_data.get("activity_kind")
+    if kind not in {"discussion", "replies"}:
+        await update.message.reply_text("Тип активности не выбран.")
+        return
+    try:
+        level = int(value)
+    except (TypeError, ValueError):
+        await update.message.reply_text("Введите число от 0 до 100.")
+        return
+    if level < 0 or level > 100:
+        await update.message.reply_text("Введите значение от 0 до 100.")
+        return
+    account = _get_account_config(context, account_name)
+    if not account:
+        await update.message.reply_text("Аккаунт не найден.")
+        return
+    if kind == "discussion":
+        account.discussion_activity_percent = level
+        label = "обсуждения"
+    else:
+        account.user_reply_activity_percent = level
+        label = "ответы"
+    serialized = _persist_accounts_json(_load_accounts_from_bot_data(context))
+    config: Config = context.bot_data["config"]
+    config.TELEGRAM_ACCOUNTS_JSON = serialized
+    context.application.bot_data["accounts_config"] = _load_accounts_from_bot_data(context)
+    _audit_log(
+        "activity.level",
+        context.user_data.get("user_id"),
+        f"{account_name} {label} -> {level}",
+    )
+    await update.message.reply_text(f"✅ {label.capitalize()}: {level}%")
+    await _set_menu(
+        update,
+        context,
+        MENU_ACTIVITY,
+        "",
+        ReplyKeyboardMarkup(
+            [["Обсуждения", "Ответы"], ["Назад", "Меню", "Статус"]],
+            resize_keyboard=True,
+        ),
     )
 
 
