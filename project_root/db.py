@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Generator, Iterable
 import json
 
@@ -38,6 +38,12 @@ def create_db_engine() -> Engine:
         connect_args={"check_same_thread": False},
         future=True,
     )
+
+
+def _naive_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
 
 
 ENGINE = create_db_engine()
@@ -904,6 +910,9 @@ def create_discussion_reply(
     reply_to_message_id: int | None,
     source_message_at: datetime | None = None,
 ) -> DiscussionReply:
+    send_at = _naive_utc(send_at)
+    if source_message_at is not None:
+        source_message_at = _naive_utc(source_message_at)
     reply = DiscussionReply(
         pipeline_id=pipeline_id,
         kind=kind,
@@ -929,6 +938,7 @@ def list_due_discussion_replies(
     *,
     kind: str | None = None,
 ) -> list[DiscussionReply]:
+    now = _naive_utc(now)
     return (
         session.execute(
             select(DiscussionReply)
@@ -949,7 +959,7 @@ def mark_discussion_reply_sent(
     session: Session, reply: DiscussionReply, sent_at: datetime
 ) -> None:
     reply.status = "sent"
-    reply.sent_at = sent_at
+    reply.sent_at = _naive_utc(sent_at)
 
 
 def mark_discussion_reply_cancelled(
