@@ -1,0 +1,10 @@
+services:
+  tg_post_service:
+    image: ghcr.io/${IMAGE_REPO:-your_org/your_repo}:latest
+    restart: unless-stopped
+    env_file:
+      - .env
+    working_dir: /app
+    volumes:
+      - ./logs:/app/logs
+      - ./tg_post_service.db:/app/tg_post_service.db

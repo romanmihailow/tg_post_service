@@ -4,3 +4,5 @@ sqlalchemy
 pydantic
 pydantic-settings
 python-dotenv
+rank-bm25
+python-telegram-bot
