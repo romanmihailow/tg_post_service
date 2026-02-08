@@ -1580,13 +1580,29 @@ async def _try_attach_account_runtime(
             api_id=account.reader.api_id,
             api_hash=account.reader.api_hash,
             session_name=account.reader.session,
+            start=False,
         )
+        if not await reader_client.is_user_authorized():
+            logger.warning(
+                "Account %s: reader session not authorized, skipping attach",
+                account.name,
+            )
+            await reader_client.disconnect()
+            return False
         if account.writer:
             writer_client = await create_client(
                 api_id=account.writer.api_id,
                 api_hash=account.writer.api_hash,
                 session_name=account.writer.session,
+                start=False,
             )
+            if not await writer_client.is_user_authorized():
+                logger.warning(
+                    "Account %s: writer session not authorized, using reader",
+                    account.name,
+                )
+                await writer_client.disconnect()
+                writer_client = reader_client
         else:
             writer_client = reader_client
         runtime_map[account.name] = AccountRuntime(
