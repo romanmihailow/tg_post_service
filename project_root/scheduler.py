@@ -1081,7 +1081,8 @@ async def _send_due_discussion_replies(
         if not state.question_message_id or not state.question_created_at:
             mark_discussion_reply_cancelled(session, reply, "no_question")
             continue
-        if state.expires_at and now >= state.expires_at:
+        expires_at = _as_utc(state.expires_at)
+        if expires_at and now >= expires_at:
             mark_discussion_reply_cancelled(session, reply, "expired")
             continue
         if not await _discussion_still_valid(
