@@ -55,6 +55,7 @@ from project_root.db import (
     toggle_pipeline_enabled,
     upsert_userbot_persona,
 )
+from project_root.pipeline_status import get_status as _get_pipeline_status
 
 logger = logging.getLogger(__name__)
 AUDIT_LOG_PATH = "logs/audit.log"
@@ -614,7 +615,38 @@ async def _pipeline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
 async def _status_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     config: Config = context.bot_data["config"]
     user_id = update.effective_user.id if update.effective_user else None
-    await update.message.reply_text(f"📊 Статус\n{_pipeline_summary(config, user_id)}")
+    if not _is_admin(user_id, config.bot_admin_ids):
+        await update.message.reply_text("Нет доступа.")
+        return
+    pipelines = _discussion_pipelines(config, user_id)
+    summary = _pipeline_summary(config, user_id)
+    pipeline1 = _format_pipeline_status_section("Pipeline 1", pipelines, "pipeline1")
+    pipeline2 = _format_pipeline_status_section("Pipeline 2", pipelines, "pipeline2")
+    await update.message.reply_text(f"📊 Статус\n{summary}\n\n{pipeline1}\n\n{pipeline2}")
+
+
+async def _pipeline1_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.bot_data["config"]
+    user_id = update.effective_user.id if update.effective_user else None
+    if not _is_admin(user_id, config.bot_admin_ids):
+        await update.message.reply_text("Нет доступа.")
+        return
+    pipelines = _discussion_pipelines(config, user_id)
+    await update.message.reply_text(
+        _format_pipeline_status_section("Pipeline 1", pipelines, "pipeline1")
+    )
+
+
+async def _pipeline2_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    config: Config = context.bot_data["config"]
+    user_id = update.effective_user.id if update.effective_user else None
+    if not _is_admin(user_id, config.bot_admin_ids):
+        await update.message.reply_text("Нет доступа.")
+        return
+    pipelines = _discussion_pipelines(config, user_id)
+    await update.message.reply_text(
+        _format_pipeline_status_section("Pipeline 2", pipelines, "pipeline2")
+    )
 
 
 async def _my_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -714,6 +746,77 @@ def _pipeline_summary(config: Config, user_id: int | None = None) -> str:
                 f"{'включен' if pipeline.is_enabled else 'выключен'}"
             )
         return "Пайплайны:\n" + "\n".join(lines)
+
+
+def _status_label(state: str) -> str:
+    labels = {
+        "idle": "ожидание",
+        "waiting": "ожидание",
+        "waiting_for_posts": "ожидание новых постов",
+        "scanning_posts": "сканирование постов",
+        "selecting_post": "выбор новости",
+        "generating_question": "генерация вопроса",
+        "scheduled": "запланировано",
+        "skipped": "пропущено",
+        "processing": "обработка",
+        "sent": "отправлено",
+        "cancelled": "отменено",
+    }
+    return labels.get(state, state)
+
+
+def _format_relative_minutes(target: datetime | None) -> str | None:
+    if not target:
+        return None
+    now = datetime.now(timezone.utc)
+    delta = (target - now).total_seconds()
+    minutes = int(abs(delta) / 60)
+    if delta >= 0:
+        return f"через ~{minutes} мин"
+    return f"{minutes} мин назад"
+
+
+def _format_status_entry(entry) -> str:
+    if entry is None:
+        return "Статус: нет данных"
+    lines = [f"Статус: {_status_label(entry.state)}"]
+    if entry.progress_total:
+        current = entry.progress_current or 0
+        lines.append(f"Прогресс: {current} / {entry.progress_total}")
+    relative = _format_relative_minutes(entry.next_action_at)
+    if relative:
+        lines.append(f"Следующее действие: {relative}")
+    if entry.message:
+        lines.append(f"Детали: {entry.message}")
+    return "\n".join(lines)
+
+
+def _discussion_pipelines(config: Config, user_id: int | None) -> list:
+    with get_session() as session:
+        pipelines = [
+            item
+            for item in get_all_pipelines(session)
+            if item.pipeline_type == "DISCUSSION"
+        ]
+    if user_id is not None:
+        pipelines = [
+            item
+            for item in pipelines
+            if _can_access_account(config, user_id, item.account_name)
+        ]
+    return pipelines
+
+
+def _format_pipeline_status_section(
+    title: str, pipelines: list, category: str
+) -> str:
+    if not pipelines:
+        return f"{title}\nНет дискуссионных пайплайнов."
+    blocks = [title]
+    for pipeline in pipelines:
+        entry = _get_pipeline_status(pipeline.id, category)
+        blocks.append(f"{pipeline.name}\n{_format_status_entry(entry)}")
+    return "\n\n".join(blocks)
 
 
 def _account_pipelines_summary(config: Config, account_name: str) -> str:
@@ -2636,6 +2739,8 @@ def build_bot_application(
     application.add_handler(CommandHandler("account", _account_cmd))
     application.add_handler(CommandHandler("pipeline", _pipeline_cmd))
     application.add_handler(CommandHandler("status", _status_cmd))
+    application.add_handler(CommandHandler("pipeline1", _pipeline1_cmd))
+    application.add_handler(CommandHandler("pipeline2", _pipeline2_cmd))
     application.add_handler(CommandHandler("my", _my_cmd))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, _handle_text))
     return application

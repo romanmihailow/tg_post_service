@@ -35,6 +35,7 @@ from project_root.db import (
     mark_discussion_reply_sent,
     upsert_discussion_bot_weight,
 )
+from project_root.pipeline_status import set_status as _set_pipeline_status
 from project_root.topics import extract_topics_for_text
 from project_root.models import (
     ChatState,
@@ -61,6 +62,29 @@ from project_root.telegram_client import (
 
 logger = logging.getLogger(__name__)
 UFA_TZ = ZoneInfo("Asia/Yekaterinburg")
+
+
+def _update_pipeline_status(
+    pipeline: Pipeline,
+    *,
+    category: str,
+    state: str,
+    progress_current: int | None = None,
+    progress_total: int | None = None,
+    next_action_at: datetime | None = None,
+    message: str | None = None,
+) -> None:
+    _set_pipeline_status(
+        pipeline_id=pipeline.id,
+        pipeline_name=pipeline.name,
+        pipeline_type=pipeline.pipeline_type,
+        category=category,
+        state=state,
+        progress_current=progress_current,
+        progress_total=progress_total,
+        next_action_at=next_action_at,
+        message=message,
+    )
 
 
 async def run_service(
@@ -322,9 +346,21 @@ async def _process_discussion_pipeline(
     settings = get_discussion_settings(session, pipeline.id)
     if not settings:
         logger.warning("Discussion settings missing for pipeline %s", pipeline.name)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="missing discussion settings",
+        )
         return False
     if not settings.target_chat:
         logger.warning("Discussion pipeline %s: target chat is empty", pipeline.name)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="target chat is empty",
+        )
         return False
     discussion_level, _ = _get_account_activity_levels(config, pipeline.account_name)
     effective_min_interval = _scale_minutes(settings.min_interval_minutes, discussion_level)
@@ -344,6 +380,12 @@ async def _process_discussion_pipeline(
             "discussion skipped: outside activity window (pipeline=%s)",
             pipeline.name,
         )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="outside activity window",
+        )
         return False
     state = get_discussion_state(session, pipeline.id)
     if state.next_due_at and now < state.next_due_at:
@@ -352,6 +394,13 @@ async def _process_discussion_pipeline(
             "next discussion in %s minutes (pipeline=%s)",
             minutes_left,
             pipeline.name,
+        )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="scheduled",
+            next_action_at=state.next_due_at,
+            message=f"next discussion in ~{minutes_left} min",
         )
         return False
     sent_any = await _send_due_discussion_replies(
@@ -374,6 +423,12 @@ async def _process_discussion_pipeline(
                 "discussion skipped: inactive chat (pipeline=%s)",
                 pipeline.name,
             )
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline1",
+                state="skipped",
+                message="inactive chat",
+            )
             return sent_any
     source_pipeline = get_pipeline_by_name(session, settings.source_pipeline_name)
     if not source_pipeline:
@@ -381,6 +436,12 @@ async def _process_discussion_pipeline(
             "Discussion pipeline %s: source pipeline %s not found",
             pipeline.name,
             settings.source_pipeline_name,
+        )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="source pipeline not found",
         )
         return sent_any
     k = random.randint(settings.k_min, settings.k_max)
@@ -390,9 +451,33 @@ async def _process_discussion_pipeline(
             "discussion skipped: no candidate posts in post_history (pipeline=%s)",
             pipeline.name,
         )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="waiting_for_posts",
+            progress_current=0,
+            progress_total=k,
+            message="no candidate posts",
+        )
         return sent_any
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline1",
+        state="scanning_posts",
+        progress_current=len(candidates),
+        progress_total=k,
+        message="collecting candidate posts",
+    )
     candidate_texts = [item.text for item in candidates]
     try:
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="selecting_post",
+            progress_current=len(candidates),
+            progress_total=k,
+            message="selecting best post",
+        )
         selected_index, in_t, out_t, total_t = await asyncio.to_thread(
             primary_account.openai_client.select_discussion_news,
             candidate_texts,
@@ -402,6 +487,12 @@ async def _process_discussion_pipeline(
         )
     except Exception:
         logger.exception("Discussion pipeline %s: OpenAI select failed", pipeline.name)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="openai select failed",
+        )
         return sent_any
     news_text = candidate_texts[selected_index - 1]
     replies_count = random.choices([1, 2, 3], weights=[60, 30, 10])[0]
@@ -413,6 +504,12 @@ async def _process_discussion_pipeline(
         logger.info(
             "discussion skipped: no available userbots (cooldown/limits) (pipeline=%s)",
             pipeline.name,
+        )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="no available userbots",
         )
         return sent_any
     replies_count = min(replies_count, len(available))
@@ -444,6 +541,12 @@ async def _process_discussion_pipeline(
         for bot in selected_bots
     ]
     try:
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="generating_question",
+            message="generating discussion question",
+        )
         payload, in_t2, out_t2, total_t2 = await asyncio.to_thread(
             primary_account.openai_client.generate_discussion_messages,
             news_text,
@@ -455,15 +558,33 @@ async def _process_discussion_pipeline(
         )
     except Exception:
         logger.exception("Discussion pipeline %s: OpenAI generate failed", pipeline.name)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="openai generate failed",
+        )
         return sent_any
     question = str(payload.get("question", "")).strip()
     replies = payload.get("replies", [])
     if not question or not isinstance(replies, list):
         logger.warning("Discussion pipeline %s: invalid OpenAI payload", pipeline.name)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="invalid OpenAI payload",
+        )
         return sent_any
     replies = [str(item).strip() for item in replies if str(item).strip()]
     if not replies:
         logger.warning("Discussion pipeline %s: empty replies", pipeline.name)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="empty replies",
+        )
         return sent_any
     replies_count = min(replies_count, len(replies))
     replies = replies[:replies_count]
@@ -528,6 +649,13 @@ async def _process_discussion_pipeline(
         minutes=random.randint(
             effective_min_interval, effective_max_interval
         )
+    )
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline1",
+        state="scheduled",
+        next_action_at=state.next_due_at,
+        message=f"replies planned: {len(replies)}",
     )
     logger.info(
         "discussion allowed: within activity window (pipeline=%s)",
@@ -1080,6 +1208,12 @@ async def _process_live_replies_pipeline(
 ) -> None:
     settings = get_discussion_settings(session, pipeline.id)
     if not settings or not settings.target_chat:
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="idle",
+            message="discussion settings missing",
+        )
         return
     now = datetime.now(timezone.utc)
     now_local = _localize_time(now, settings.activity_timezone)
@@ -1088,6 +1222,12 @@ async def _process_live_replies_pipeline(
         logger.info(
             "user reply skipped: outside activity window (pipeline=%s)",
             pipeline.name,
+        )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="skipped",
+            message="outside activity window",
         )
         await _send_due_user_replies(
             config,
@@ -1112,6 +1252,14 @@ async def _process_live_replies_pipeline(
     )
     chat_state = get_chat_state(session, pipeline.id, settings.target_chat)
     if chat_state.next_scan_at and now < chat_state.next_scan_at:
+        minutes_left = int((chat_state.next_scan_at - now).total_seconds() / 60)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="waiting",
+            next_action_at=chat_state.next_scan_at,
+            message=f"next scan in ~{minutes_left} min",
+        )
         return
     candidates = await _scan_chat_for_candidates(
         accounts,
@@ -1121,8 +1269,23 @@ async def _process_live_replies_pipeline(
     )
     chat_state.next_scan_at = now + timedelta(seconds=random.randint(30, 60))
     if not candidates:
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="waiting",
+            next_action_at=chat_state.next_scan_at,
+            message="no candidates",
+        )
         return
     logger.info("user reply candidates: %s", len(candidates))
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline2",
+        state="processing",
+        progress_current=0,
+        progress_total=len(candidates),
+        message="processing candidates",
+    )
     for candidate in candidates:
         await _plan_user_reply_for_candidate(
             config,
@@ -1220,6 +1383,12 @@ async def _plan_user_reply_for_candidate(
     candidate: dict,
 ) -> None:
     now = datetime.now(timezone.utc)
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline2",
+        state="processing",
+        message=f"message {candidate.get('message_id')}",
+    )
     today = now.strftime("%Y-%m-%d")
     _, reply_level = _get_account_activity_levels(config, pipeline.account_name)
     reply_factor = _activity_factor(reply_level)
@@ -1231,6 +1400,12 @@ async def _plan_user_reply_for_candidate(
         max_replies = max(1, int(round(max_replies * reply_factor)))
     if max_replies > 0 and chat_state.replies_today >= max_replies:
         logger.info("user reply skipped: global limit reached")
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="skipped",
+            message=f"message {candidate.get('message_id')}: global limit",
+        )
         return
     base_prob = random.uniform(0.4, 0.6)
     boosted = candidate["is_reply_to_bot"] or "?" in candidate["text"]
@@ -1238,6 +1413,12 @@ async def _plan_user_reply_for_candidate(
     decision_prob = min(0.95, decision_prob * reply_factor)
     if random.random() > decision_prob:
         logger.info("user reply skipped: probability")
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="skipped",
+            message=f"message {candidate.get('message_id')}: probability",
+        )
         return
     if settings.user_reply_max_age_minutes > 0:
         candidate_time = candidate["created_at"]
@@ -1246,6 +1427,12 @@ async def _plan_user_reply_for_candidate(
         age_minutes = (now - candidate_time).total_seconds() / 60
         if age_minutes > settings.user_reply_max_age_minutes:
             logger.info("user reply skipped: message too old")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="skipped",
+                message=f"message {candidate.get('message_id')}: too old",
+            )
             return
     effective_inactivity = (
         _scale_minutes(settings.inactivity_pause_minutes, reply_level, min_value=0)
@@ -1259,6 +1446,12 @@ async def _plan_user_reply_for_candidate(
         delta = now - last_human
         if delta.total_seconds() > effective_inactivity * 60:
             logger.info("user reply skipped: inactive chat")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="skipped",
+                message=f"message {candidate.get('message_id')}: inactive chat",
+            )
             return
     replies_count = random.choices([1, 2], weights=[80, 20])[0]
     available_weights = _ensure_discussion_weights(
@@ -1267,6 +1460,12 @@ async def _plan_user_reply_for_candidate(
     available = _filter_available_bots(available_weights, now)
     if not available:
         logger.info("user reply skipped: no available userbots")
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="skipped",
+            message=f"message {candidate.get('message_id')}: no available userbots",
+        )
         return
     try:
         message_topics = extract_topics_for_text(candidate["text"])
@@ -1311,6 +1510,12 @@ async def _plan_user_reply_for_candidate(
             )
         except Exception:
             logger.exception("user reply skipped: openai error")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="skipped",
+                message=f"message {candidate.get('message_id')}: openai error",
+            )
             continue
         if not reply_text:
             continue
@@ -1325,6 +1530,16 @@ async def _plan_user_reply_for_candidate(
             send_at=send_at,
             reply_to_message_id=candidate["message_id"],
             source_message_at=base_time,
+        )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="scheduled",
+            next_action_at=send_at,
+            message=(
+                f"message {candidate.get('message_id')}: "
+                f"bot {bot_weight.account_name}"
+            ),
         )
         chat_state.replies_today += 1
         logger.info(
@@ -1379,6 +1594,12 @@ async def _send_due_user_replies(
     if not allow_send:
         for reply in due_replies:
             mark_discussion_reply_cancelled(session, reply, "outside activity window")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="cancelled",
+                message=f"reply {reply.id}: outside activity window",
+            )
         return
     chat_state = get_chat_state(session, pipeline.id, settings.target_chat)
     _, reply_level = _get_account_activity_levels(config, pipeline.account_name)
@@ -1393,10 +1614,22 @@ async def _send_due_user_replies(
             for reply in due_replies:
                 mark_discussion_reply_cancelled(session, reply, "inactive chat")
                 logger.info("user reply cancelled: inactive chat")
+                _update_pipeline_status(
+                    pipeline,
+                    category="pipeline2",
+                    state="cancelled",
+                    message=f"reply {reply.id}: inactive chat",
+                )
             return
     for reply in due_replies:
         if reply.reply_to_message_id is None:
             mark_discussion_reply_cancelled(session, reply, "missing reply_to")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="cancelled",
+                message=f"reply {reply.id}: missing reply_to",
+            )
             continue
         if settings.user_reply_max_age_minutes > 0:
             if reply.source_message_at:
@@ -1409,14 +1642,32 @@ async def _send_due_user_replies(
             if age > settings.user_reply_max_age_minutes:
                 mark_discussion_reply_cancelled(session, reply, "message too old")
                 logger.info("user reply cancelled: message too old")
+                _update_pipeline_status(
+                    pipeline,
+                    category="pipeline2",
+                    state="cancelled",
+                    message=f"reply {reply.id}: message too old",
+                )
                 continue
         account = accounts.get(reply.account_name)
         if not account:
             mark_discussion_reply_cancelled(session, reply, "account_missing")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="cancelled",
+                message=f"reply {reply.id}: account missing",
+            )
             continue
         if not _can_use_bot_for_reply(session, pipeline.id, reply.account_name, now):
             mark_discussion_reply_cancelled(session, reply, "cooldown/limit")
             logger.info("user reply cancelled: cooldown/limits")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="cancelled",
+                message=f"reply {reply.id}: cooldown/limits",
+            )
             continue
         try:
             sent = await send_reply_text(
@@ -1432,6 +1683,12 @@ async def _send_due_user_replies(
             )
         except Exception:
             logger.exception("user reply cancelled: send failed")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline2",
+                state="cancelled",
+                message=f"reply {reply.id}: send failed",
+            )
             continue
         mark_discussion_reply_sent(session, reply, now)
         _update_bot_usage(session, pipeline.id, reply.account_name, now)
@@ -1439,6 +1696,12 @@ async def _send_due_user_replies(
             "user reply sent: bot %s -> %s",
             reply.account_name,
             getattr(sent, "id", None),
+        )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="sent",
+            message=f"bot {reply.account_name} -> {getattr(sent, 'id', None)}",
         )
 
 
