@@ -945,7 +945,8 @@ def _filter_available_bots(
         if item.used_today >= item.daily_limit:
             continue
         if item.last_used_at is not None:
-            elapsed = (now - item.last_used_at).total_seconds() / 60
+            last_used = _as_utc(item.last_used_at)
+            elapsed = (now - last_used).total_seconds() / 60 if last_used else 0
             if elapsed < item.cooldown_minutes:
                 continue
         if item.weight <= 0:
