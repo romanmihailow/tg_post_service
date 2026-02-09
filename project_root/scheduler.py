@@ -417,6 +417,12 @@ async def _process_discussion_pipeline(
     )
     expires_at = _as_utc(state.expires_at)
     if expires_at and now < expires_at:
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="scheduled",
+            message="waiting for replies",
+        )
         return sent_any
     if expires_at and now >= expires_at:
         _reset_discussion_state(state)
@@ -1081,10 +1087,22 @@ async def _send_due_discussion_replies(
     for reply in due_replies:
         if not state.question_message_id or not state.question_created_at:
             mark_discussion_reply_cancelled(session, reply, "no_question")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline1",
+                state="cancelled",
+                message=f"reply {reply.id}: no question",
+            )
             continue
         expires_at = _as_utc(state.expires_at)
         if expires_at and now >= expires_at:
             mark_discussion_reply_cancelled(session, reply, "expired")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline1",
+                state="cancelled",
+                message=f"reply {reply.id}: expired",
+            )
             continue
         if not await _discussion_still_valid(
             primary_account.reader_client,
@@ -1093,10 +1111,22 @@ async def _send_due_discussion_replies(
             bot_ids,
         ):
             mark_discussion_reply_cancelled(session, reply, "topic_moved")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline1",
+                state="cancelled",
+                message=f"reply {reply.id}: topic moved",
+            )
             continue
         account = accounts.get(reply.account_name)
         if not account:
             mark_discussion_reply_cancelled(session, reply, "account_missing")
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline1",
+                state="cancelled",
+                message=f"reply {reply.id}: account missing",
+            )
             continue
         reply_to_id = _pick_reply_parent(state, settings, reply)
         try:
@@ -1115,6 +1145,12 @@ async def _send_due_discussion_replies(
             logger.exception(
                 "Discussion pipeline %s: failed to send reply", pipeline.name
             )
+            _update_pipeline_status(
+                pipeline,
+                category="pipeline1",
+                state="cancelled",
+                message=f"reply {reply.id}: send failed",
+            )
             continue
         mark_discussion_reply_sent(session, reply, now)
         state.replies_sent += 1
@@ -1122,6 +1158,12 @@ async def _send_due_discussion_replies(
         state.last_reply_parent_id = reply_to_id
         state.last_bot_reply_message_id = getattr(sent_message, "id", None)
         _update_bot_usage(session, pipeline.id, reply.account_name, now)
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="sent",
+            message=f"bot {reply.account_name} -> {getattr(sent_message, 'id', None)}",
+        )
         sent_any = True
     return sent_any
 
