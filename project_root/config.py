@@ -126,7 +126,7 @@ class PipelineConfig(BaseModel):
     sources: List[str]
     mode: str = "TEXT"
     pipeline_type: str = "STANDARD"
-    interval_seconds: int = 3600
+    interval_seconds: int = 300
     blackbox_every_n: int = 0
     discussion_target_chat: Optional[str] = Field(default=None)
     discussion_source_pipeline: Optional[str] = Field(default=None)
@@ -245,7 +245,7 @@ class Config(BaseSettings):
     OPENAI_TEXT_OUTPUT_PRICE_PER_1M: float = Field(default=0.60)
     OPENAI_IMAGE_PRICE_1024_USD: float = Field(default=0.042)
     POSTING_MODE: Optional[str] = Field(default="TEXT")
-    POSTING_INTERVAL_SECONDS: int = Field(default=3600)
+    POSTING_INTERVAL_SECONDS: int = Field(default=300)
     MIN_TEXT_LENGTH: int = Field(default=100)
     MAX_POSTS_PER_RUN: int = Field(default=1)
     TELEGRAM_REQUEST_DELAY_SECONDS: float = Field(default=1.0)

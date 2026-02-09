@@ -327,6 +327,16 @@ def _interval_keyboard(current_minutes: int | None = None) -> ReplyKeyboardMarku
     return ReplyKeyboardMarkup([row, ["Назад", "Меню", "Статус"]], resize_keyboard=True)
 
 
+def _parse_minutes_input(value: str) -> int | None:
+    match = re.search(r"-?\d+", value)
+    if not match:
+        return None
+    try:
+        return int(match.group())
+    except ValueError:
+        return None
+
+
 def _activity_level_keyboard(current_percent: int | None = None) -> ReplyKeyboardMarkup:
     options = ["1 (10%)", "2 (30%)", "3 (50%)", "4 (70%)", "5 (вручную)"]
     row = []
@@ -2191,9 +2201,8 @@ async def _update_pipeline_interval(
     update: Update, context: ContextTypes.DEFAULT_TYPE, interval_text: str
 ) -> None:
     context.user_data.pop("awaiting", None)
-    try:
-        minutes = int(interval_text)
-    except ValueError:
+    minutes = _parse_minutes_input(interval_text)
+    if minutes is None:
         await update.message.reply_text("Нужно целое число минут.")
         return
     if minutes <= 0:
@@ -2232,11 +2241,15 @@ async def _update_pipeline_intensity(
     }
     if cleaned == "5 (вручную)":
         context.user_data["awaiting"] = {"type": "pipeline_interval"}
-        await update.message.reply_text("Введите интервал в минутах:")
+        await update.message.reply_text("Введите интервал в минутах (число):")
         return
     interval = mapping.get(cleaned)
     if interval is None:
-        await update.message.reply_text("Выберите значение с кнопок.")
+        minutes = _parse_minutes_input(cleaned)
+        if minutes is None:
+            await update.message.reply_text("Выберите значение с кнопок.")
+            return
+        await _update_pipeline_interval(update, context, str(minutes))
         return
     pipeline_name = context.user_data.get("pipeline")
     if not pipeline_name:

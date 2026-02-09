@@ -194,6 +194,10 @@ class DiscussionState(Base):
     last_bot_reply_message_id: Mapped[Optional[int]] = mapped_column(
         Integer, nullable=True
     )
+    last_source_post_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    last_source_post_at: Mapped[Optional[datetime]] = mapped_column(
+        DateTime, nullable=True
+    )
     next_due_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 

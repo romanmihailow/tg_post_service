@@ -177,6 +177,7 @@ async def run_service(
                     await _process_live_replies_pipeline(
                         config, accounts, account, session, pipeline
                     )
+                    session.commit()
         except Exception:
             logger.exception("Unexpected error in main loop")
         sleep_min = config.SERVICE_SLEEP_MIN_SECONDS
@@ -461,8 +462,8 @@ async def _process_discussion_pipeline(
         )
         return sent_any
     k = random.randint(settings.k_min, settings.k_max)
-    candidates = get_recent_post_history(session, source_pipeline.id, k)
-    if not candidates:
+    candidates_all = get_recent_post_history(session, source_pipeline.id, k)
+    if not candidates_all:
         logger.info(
             "discussion skipped: no candidate posts in post_history (pipeline=%s)",
             pipeline.name,
@@ -476,6 +477,13 @@ async def _process_discussion_pipeline(
             message="no candidate posts",
         )
         return sent_any
+    candidates = candidates_all
+    if state.last_source_post_id and len(candidates_all) > 1:
+        filtered = [
+            item for item in candidates_all if item.id != state.last_source_post_id
+        ]
+        if filtered:
+            candidates = filtered
     _update_pipeline_status(
         pipeline,
         category="pipeline1",
@@ -510,6 +518,9 @@ async def _process_discussion_pipeline(
             message="openai select failed",
         )
         return sent_any
+    if selected_index < 1 or selected_index > len(candidate_texts):
+        selected_index = 1
+    selected_item = candidates[selected_index - 1]
     news_text = candidate_texts[selected_index - 1]
     replies_count = random.choices([1, 2, 3], weights=[60, 30, 10])[0]
     available_weights = _ensure_discussion_weights(
@@ -537,7 +548,7 @@ async def _process_discussion_pipeline(
             message_topics,
             pipeline_id=pipeline.id,
             chat_id=settings.target_chat,
-            message_id=candidates[selected_index - 1].id,
+            message_id=selected_item.id,
         )
     except Exception:
         logger.warning(
@@ -570,7 +581,7 @@ async def _process_discussion_pipeline(
             roles,
             pipeline_id=pipeline.id,
             chat_id=settings.target_chat,
-            extra={"source": "pipeline1", "post_id": candidates[selected_index - 1].id},
+            extra={"source": "pipeline1", "post_id": selected_item.id},
         )
     except Exception:
         logger.exception("Discussion pipeline %s: OpenAI generate failed", pipeline.name)
@@ -623,6 +634,8 @@ async def _process_discussion_pipeline(
     question_message_id = reply_message.id
     state.question_message_id = question_message_id
     state.question_created_at = now
+    state.last_source_post_id = selected_item.id
+    state.last_source_post_at = selected_item.created_at
     state.expires_at = now + timedelta(minutes=60)
     state.replies_planned = len(replies)
     state.replies_sent = 0

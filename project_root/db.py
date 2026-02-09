@@ -198,6 +198,18 @@ def _ensure_discussion_state_schema() -> None:
             connection.execute(
                 text("ALTER TABLE discussion_state ADD COLUMN next_due_at DATETIME")
             )
+        if "last_source_post_id" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE discussion_state ADD COLUMN last_source_post_id INTEGER"
+                )
+            )
+        if "last_source_post_at" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE discussion_state ADD COLUMN last_source_post_at DATETIME"
+                )
+            )
         connection.commit()
 
 
@@ -572,6 +584,8 @@ def _ensure_discussion_states(session: Session) -> None:
                     last_bot_reply_at=None,
                     last_reply_parent_id=None,
                     last_bot_reply_message_id=None,
+                    last_source_post_id=None,
+                    last_source_post_at=None,
                     next_due_at=None,
                 )
             )
@@ -827,6 +841,8 @@ def get_discussion_state(session: Session, pipeline_id: int) -> DiscussionState:
             last_bot_reply_at=None,
             last_reply_parent_id=None,
             last_bot_reply_message_id=None,
+            last_source_post_id=None,
+            last_source_post_at=None,
             next_due_at=None,
         )
         session.add(state)
