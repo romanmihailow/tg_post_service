@@ -87,6 +87,14 @@ def _update_pipeline_status(
     )
 
 
+def _as_utc(dt: datetime | None) -> datetime | None:
+    if not dt:
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 async def run_service(
     config: Config, accounts: dict[str, AccountRuntime], bot_app=None
 ) -> None:
@@ -388,8 +396,9 @@ async def _process_discussion_pipeline(
         )
         return False
     state = get_discussion_state(session, pipeline.id)
-    if state.next_due_at and now < state.next_due_at:
-        minutes_left = int((state.next_due_at - now).total_seconds() / 60)
+    next_due_at = _as_utc(state.next_due_at)
+    if next_due_at and now < next_due_at:
+        minutes_left = int((next_due_at - now).total_seconds() / 60)
         logger.info(
             "next discussion in %s minutes (pipeline=%s)",
             minutes_left,
@@ -399,16 +408,17 @@ async def _process_discussion_pipeline(
             pipeline,
             category="pipeline1",
             state="scheduled",
-            next_action_at=state.next_due_at,
+            next_action_at=next_due_at,
             message=f"next discussion in ~{minutes_left} min",
         )
         return False
     sent_any = await _send_due_discussion_replies(
         config, accounts, primary_account, session, pipeline, settings, state, now
     )
-    if state.expires_at and now < state.expires_at:
+    expires_at = _as_utc(state.expires_at)
+    if expires_at and now < expires_at:
         return sent_any
-    if state.expires_at and now >= state.expires_at:
+    if expires_at and now >= expires_at:
         _reset_discussion_state(state)
         session.flush()
     if effective_inactivity > 0:
