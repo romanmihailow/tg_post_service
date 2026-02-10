@@ -1371,13 +1371,14 @@ async def _process_live_replies_pipeline(
         allow_send=True,
     )
     chat_state = get_chat_state(session, pipeline.id, settings.target_chat)
-    if chat_state.next_scan_at and now < chat_state.next_scan_at:
-        minutes_left = int((chat_state.next_scan_at - now).total_seconds() / 60)
+    next_scan_at = _as_utc(chat_state.next_scan_at)
+    if next_scan_at and now < next_scan_at:
+        minutes_left = int((next_scan_at - now).total_seconds() / 60)
         _update_pipeline_status(
             pipeline,
             category="pipeline2",
             state="waiting",
-            next_action_at=chat_state.next_scan_at,
+            next_action_at=next_scan_at,
             message=f"next scan in ~{minutes_left} min",
         )
         return
