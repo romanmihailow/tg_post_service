@@ -96,6 +96,19 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     return dt
 
 
+def _should_store_post_history(
+    session: Session, pipeline: Pipeline, config: Config
+) -> bool:
+    if config.DEDUP_ENABLED:
+        return True
+    row = session.execute(
+        select(DiscussionSettings.id)
+        .where(DiscussionSettings.source_pipeline_name == pipeline.name)
+        .limit(1)
+    ).scalar_one_or_none()
+    return row is not None
+
+
 def _load_recent_topics(state: DiscussionState) -> list[str]:
     raw = (state.recent_topics_json or "").strip()
     if not raw:
@@ -365,7 +378,7 @@ async def _process_pipeline_once(
         return False
 
     source.last_message_id = message.id
-    if config.DEDUP_ENABLED and original_text:
+    if original_text and _should_store_post_history(session, pipeline, config):
         _store_recent_post(session, pipeline.id, original_text, config.DEDUP_WINDOW_SIZE)
     state.current_source_index = (index + 1) % len(sources)
     state.total_posts = next_post_counter
