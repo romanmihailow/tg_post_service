@@ -210,6 +210,12 @@ def _ensure_discussion_state_schema() -> None:
                     "ALTER TABLE discussion_state ADD COLUMN last_source_post_at DATETIME"
                 )
             )
+        if "recent_topics_json" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE discussion_state ADD COLUMN recent_topics_json TEXT"
+                )
+            )
         connection.commit()
 
 
@@ -586,6 +592,7 @@ def _ensure_discussion_states(session: Session) -> None:
                     last_bot_reply_message_id=None,
                     last_source_post_id=None,
                     last_source_post_at=None,
+                    recent_topics_json=None,
                     next_due_at=None,
                 )
             )
@@ -843,6 +850,7 @@ def get_discussion_state(session: Session, pipeline_id: int) -> DiscussionState:
             last_bot_reply_message_id=None,
             last_source_post_id=None,
             last_source_post_at=None,
+            recent_topics_json=None,
             next_due_at=None,
         )
         session.add(state)

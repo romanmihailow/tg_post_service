@@ -62,6 +62,7 @@ from project_root.telegram_client import (
 
 logger = logging.getLogger(__name__)
 UFA_TZ = ZoneInfo("Asia/Yekaterinburg")
+_DISCUSSION_RECENT_TOPICS_LIMIT = 3
 
 
 def _update_pipeline_status(
@@ -93,6 +94,33 @@ def _as_utc(dt: datetime | None) -> datetime | None:
     if dt.tzinfo is None:
         return dt.replace(tzinfo=timezone.utc)
     return dt
+
+
+def _load_recent_topics(state: DiscussionState) -> list[str]:
+    raw = (state.recent_topics_json or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [str(item).strip().lower() for item in data if str(item).strip()]
+
+
+def _update_recent_topics(state: DiscussionState, topics: list[str]) -> None:
+    normalized = [item.strip().lower() for item in topics if item and item.strip()]
+    if not normalized:
+        return
+    current = _load_recent_topics(state)
+    for topic in normalized:
+        if topic in current:
+            current.remove(topic)
+        current.insert(0, topic)
+    state.recent_topics_json = json.dumps(
+        current[:_DISCUSSION_RECENT_TOPICS_LIMIT], ensure_ascii=False
+    )
 
 
 async def run_service(
@@ -484,6 +512,17 @@ async def _process_discussion_pipeline(
         ]
         if filtered:
             candidates = filtered
+    recent_topics = set(_load_recent_topics(state))
+    if recent_topics and len(candidates) > 1:
+        candidates_with_topics = []
+        filtered_by_topics = []
+        for item in candidates:
+            topics = extract_topics_for_text(item.text)
+            candidates_with_topics.append((item, topics))
+            if not recent_topics.intersection({t.lower() for t in topics}):
+                filtered_by_topics.append(item)
+        if filtered_by_topics:
+            candidates = filtered_by_topics
     _update_pipeline_status(
         pipeline,
         category="pipeline1",
@@ -636,6 +675,7 @@ async def _process_discussion_pipeline(
     state.question_created_at = now
     state.last_source_post_id = selected_item.id
     state.last_source_post_at = selected_item.created_at
+    _update_recent_topics(state, extract_topics_for_text(news_text))
     state.expires_at = now + timedelta(minutes=60)
     state.replies_planned = len(replies)
     state.replies_sent = 0
