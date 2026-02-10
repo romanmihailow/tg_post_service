@@ -109,6 +109,53 @@ def _should_store_post_history(
     return row is not None
 
 
+def _post_history_is_stale(
+    items: list[PostHistory], now: datetime, max_age_hours: int = 6
+) -> bool:
+    if not items:
+        return True
+    latest = max((item.created_at for item in items if item.created_at), default=None)
+    latest_utc = _as_utc(latest)
+    if not latest_utc:
+        return True
+    return (now - latest_utc).total_seconds() >= max_age_hours * 3600
+
+
+async def _backfill_post_history_from_channel(
+    session: Session,
+    client,
+    *,
+    source_channel: str,
+    pipeline_id: int,
+    min_text_length: int,
+    window_size: int,
+) -> int:
+    existing_texts = set(
+        session.execute(
+            select(PostHistory.text)
+            .where(PostHistory.pipeline_id == pipeline_id)
+            .order_by(PostHistory.id.desc())
+            .limit(window_size)
+        )
+        .scalars()
+        .all()
+    )
+    messages = []
+    async for message in client.iter_messages(source_channel, limit=window_size * 2):
+        text = (message.message or "").strip()
+        if len(text) < min_text_length:
+            continue
+        if text in existing_texts:
+            continue
+        messages.append(text)
+    if not messages:
+        return 0
+    # Store oldest first so ordering matches channel recency.
+    for text in reversed(messages):
+        _store_recent_post(session, pipeline_id, text, window_size)
+    return len(messages)
+
+
 def _load_recent_topics(state: DiscussionState) -> list[str]:
     raw = (state.recent_topics_json or "").strip()
     if not raw:
@@ -504,6 +551,23 @@ async def _process_discussion_pipeline(
         return sent_any
     k = random.randint(settings.k_min, settings.k_max)
     candidates_all = get_recent_post_history(session, source_pipeline.id, k)
+    if _post_history_is_stale(candidates_all, now):
+        backfilled = await _backfill_post_history_from_channel(
+            session,
+            primary_account.reader_client,
+            source_channel=source_pipeline.destination_channel,
+            pipeline_id=source_pipeline.id,
+            min_text_length=config.MIN_TEXT_LENGTH,
+            window_size=config.DEDUP_WINDOW_SIZE,
+        )
+        if backfilled:
+            logger.info(
+                "Discussion pipeline %s: backfilled %s posts from %s",
+                pipeline.name,
+                backfilled,
+                source_pipeline.destination_channel,
+            )
+            candidates_all = get_recent_post_history(session, source_pipeline.id, k)
     if not candidates_all:
         logger.info(
             "discussion skipped: no candidate posts in post_history (pipeline=%s)",
