@@ -63,6 +63,8 @@ from project_root.telegram_client import (
 logger = logging.getLogger(__name__)
 UFA_TZ = ZoneInfo("Asia/Yekaterinburg")
 _DISCUSSION_RECENT_TOPICS_LIMIT = 3
+# Обрабатывать не больше N отложенных ответов за цикл, чтобы не блокировать скан чата
+_MAX_DUE_USER_REPLIES_PER_CYCLE = 5
 
 
 def _update_pipeline_status(
@@ -1479,6 +1481,7 @@ async def _process_live_replies_pipeline(
         state="processing",
         message="scanning chat",
     )
+    logger.info("Pipeline 2 %s: scanning chat %s", pipeline.name, settings.target_chat)
     candidates = await _scan_chat_for_candidates(
         accounts,
         primary_account,
@@ -1486,6 +1489,12 @@ async def _process_live_replies_pipeline(
         settings.target_chat,
     )
     chat_state.next_scan_at = now + timedelta(seconds=random.randint(30, 60))
+    logger.info(
+        "Pipeline 2 %s: scan done, candidates=%s (last_seen_message_id=%s)",
+        pipeline.name,
+        len(candidates),
+        chat_state.last_seen_message_id,
+    )
     if not candidates:
         _update_pipeline_status(
             pipeline,
@@ -1809,6 +1818,20 @@ async def _send_due_user_replies(
     )
     if not due_replies:
         return
+    total_due = len(due_replies)
+    due_replies = due_replies[:_MAX_DUE_USER_REPLIES_PER_CYCLE]
+    logger.info(
+        "Pipeline 2 %s: %s due replies in queue, processing %s this cycle",
+        pipeline.name,
+        total_due,
+        len(due_replies),
+    )
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline2",
+        state="processing",
+        message=f"sending {len(due_replies)} of {total_due} due replies",
+    )
     if not allow_send:
         for reply in due_replies:
             mark_discussion_reply_cancelled(session, reply, "outside activity window")
@@ -1895,6 +1918,12 @@ async def _send_due_user_replies(
                 message=f"reply {reply.id}: cooldown/limits",
             )
             continue
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline2",
+            state="processing",
+            message=f"sending reply {reply.id}",
+        )
         try:
             sent = await send_reply_text(
                 account.writer_client,
