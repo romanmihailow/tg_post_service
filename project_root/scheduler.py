@@ -1866,8 +1866,13 @@ async def _send_due_user_replies(
                 flood_wait_max_seconds=account.behavior.FLOOD_WAIT_MAX_SECONDS,
                 flood_wait_notify_after_seconds=pipeline.interval_seconds,
             )
-        except Exception:
+        except Exception as exc:
             logger.exception("user reply cancelled: send failed")
+            mark_discussion_reply_cancelled(
+                session,
+                reply,
+                f"send failed: {exc.__class__.__name__}",
+            )
             _update_pipeline_status(
                 pipeline,
                 category="pipeline2",
