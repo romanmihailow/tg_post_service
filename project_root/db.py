@@ -65,9 +65,6 @@ def init_db(config: Config) -> None:
         _ensure_discussion_states(session)
         _ensure_global_state(session)
         _seed_userbot_persona(session, [item.name for item in config.telegram_accounts()])
-        from project_root.persona_update import ensure_persona_t9174800805
-
-        ensure_persona_t9174800805(session)
         session.commit()
 
 
@@ -553,7 +550,9 @@ def _ensure_pipelines(session: Session, pipelines: Iterable[PipelineConfig]) -> 
                     pipeline_config.discussion_max_auto_replies_per_chat_per_day
                 ),
                 user_reply_max_age_minutes=(
-                    pipeline_config.discussion_user_reply_max_age_minutes
+                    120
+                    if pipeline_config.name == "discuss_news_blackbox"
+                    else pipeline_config.discussion_user_reply_max_age_minutes
                 ),
             )
 
