@@ -65,6 +65,9 @@ def init_db(config: Config) -> None:
         _ensure_discussion_states(session)
         _ensure_global_state(session)
         _seed_userbot_persona(session, [item.name for item in config.telegram_accounts()])
+        from project_root.persona_update import ensure_persona_t9174800805
+
+        ensure_persona_t9174800805(session)
         session.commit()
 
 
