@@ -1445,6 +1445,12 @@ async def _process_live_replies_pipeline(
             allow_send=False,
         )
         return
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline2",
+        state="processing",
+        message="checking due replies",
+    )
     await _send_due_user_replies(
         config,
         accounts,
@@ -1467,6 +1473,12 @@ async def _process_live_replies_pipeline(
             message=f"next scan in ~{minutes_left} min",
         )
         return
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline2",
+        state="processing",
+        message="scanning chat",
+    )
     candidates = await _scan_chat_for_candidates(
         accounts,
         primary_account,
@@ -1847,7 +1859,15 @@ async def _send_due_user_replies(
                 age = (now - reply.send_at).total_seconds() / 60
             if age > settings.user_reply_max_age_minutes:
                 mark_discussion_reply_cancelled(session, reply, "message too old")
-                logger.info("user reply cancelled: message too old")
+                ref_ts = source_time if reply.source_message_at else reply.send_at
+                logger.info(
+                    "user reply cancelled: message too old (reply %s: age=%.1f min, limit=%s min, now_utc=%s, ref_utc=%s)",
+                    reply.id,
+                    age,
+                    settings.user_reply_max_age_minutes,
+                    now.isoformat(),
+                    ref_ts.isoformat() if ref_ts else str(ref_ts),
+                )
                 _update_pipeline_status(
                     pipeline,
                     category="pipeline2",
