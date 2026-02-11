@@ -1879,7 +1879,10 @@ async def _send_due_user_replies(
                     source_time = source_time.replace(tzinfo=timezone.utc)
                 age = (now - source_time).total_seconds() / 60
             else:
-                age = (now - reply.send_at).total_seconds() / 60
+                send_at = reply.send_at
+                if send_at and send_at.tzinfo is None:
+                    send_at = send_at.replace(tzinfo=timezone.utc)
+                age = (now - send_at).total_seconds() / 60 if send_at else 0
             if age > settings.user_reply_max_age_minutes:
                 mark_discussion_reply_cancelled(session, reply, "message too old")
                 ref_ts = source_time if reply.source_message_at else reply.send_at
@@ -1983,7 +1986,10 @@ def _can_use_bot_for_reply(
     if row.used_today >= row.daily_limit:
         return False
     if row.last_used_at is not None:
-        elapsed = (now - row.last_used_at).total_seconds() / 60
+        last_used = row.last_used_at
+        if last_used.tzinfo is None:
+            last_used = last_used.replace(tzinfo=timezone.utc)
+        elapsed = (now - last_used).total_seconds() / 60
         if elapsed < row.cooldown_minutes:
             return False
     return True
