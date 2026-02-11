@@ -261,6 +261,17 @@ async def run_service(
                     account_name = pipeline.account_name or "default"
                     account = accounts.get(account_name)
                     if not account:
+                        logger.warning(
+                            "Pipeline %s: account %s not in runtime, skipping live replies",
+                            pipeline.name,
+                            account_name,
+                        )
+                        _update_pipeline_status(
+                            pipeline,
+                            category="pipeline2",
+                            state="idle",
+                            message=f"account {account_name!r} not in runtime",
+                        )
                         continue
                     await _process_live_replies_pipeline(
                         config, accounts, account, session, pipeline
