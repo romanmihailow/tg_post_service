@@ -257,6 +257,10 @@ async def run_service(
                 discussion_pipelines = [
                     item for item in pipelines if item.pipeline_type == "DISCUSSION" and item.is_enabled
                 ]
+                logger.info(
+                    "Discussion pipelines this cycle: %s",
+                    [p.name for p in discussion_pipelines],
+                )
                 for pipeline in discussion_pipelines:
                     account_name = pipeline.account_name or "default"
                     account = accounts.get(account_name)
@@ -1401,6 +1405,12 @@ async def _process_live_replies_pipeline(
     session: Session,
     pipeline: Pipeline,
 ) -> None:
+    _update_pipeline_status(
+        pipeline,
+        category="pipeline2",
+        state="processing",
+        message="Pipeline 2 started",
+    )
     settings = get_discussion_settings(session, pipeline.id)
     if not settings or not settings.target_chat:
         _update_pipeline_status(

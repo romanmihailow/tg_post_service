@@ -518,6 +518,8 @@ def _ensure_pipelines(session: Session, pipelines: Iterable[PipelineConfig]) -> 
             pipeline.blackbox_every_n = pipeline_config.blackbox_every_n
             pipeline.account_name = pipeline_config.account
             pipeline.pipeline_type = pipeline_config.pipeline_type
+            if pipeline_config.pipeline_type == "DISCUSSION":
+                pipeline.is_enabled = 1
 
         existing_sources = {
             source.source_channel for source in pipeline.sources
