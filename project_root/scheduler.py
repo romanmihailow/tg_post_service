@@ -1482,7 +1482,7 @@ async def _process_live_replies_pipeline(
         message="scanning chat",
     )
     logger.info("Pipeline 2 %s: scanning chat %s", pipeline.name, settings.target_chat)
-    candidates = await _scan_chat_for_candidates(
+    candidates, max_id_seen = await _scan_chat_for_candidates(
         accounts,
         primary_account,
         chat_state,
@@ -1496,6 +1496,8 @@ async def _process_live_replies_pipeline(
         chat_state.last_seen_message_id,
     )
     if not candidates:
+        if max_id_seen is not None:
+            chat_state.last_seen_message_id = max_id_seen
         _update_pipeline_status(
             pipeline,
             category="pipeline2",
@@ -1513,8 +1515,9 @@ async def _process_live_replies_pipeline(
         progress_total=len(candidates),
         message="processing candidates",
     )
+    replies_created = 0
     for candidate in candidates:
-        await _plan_user_reply_for_candidate(
+        created = await _plan_user_reply_for_candidate(
             config,
             accounts,
             primary_account,
@@ -1524,6 +1527,17 @@ async def _process_live_replies_pipeline(
             chat_state,
             candidate,
         )
+        if created:
+            replies_created += 1
+    if max_id_seen is not None and replies_created > 0:
+        chat_state.last_seen_message_id = max_id_seen
+    elif replies_created == 0 and candidates:
+        logger.info(
+            "Pipeline 2 %s: no replies created for %s candidates, keeping last_seen=%s for retry",
+            pipeline.name,
+            len(candidates),
+            chat_state.last_seen_message_id,
+        )
 
 
 async def _scan_chat_for_candidates(
@@ -1531,7 +1545,12 @@ async def _scan_chat_for_candidates(
     primary_account: AccountRuntime,
     chat_state: ChatState,
     chat_id: str,
-) -> list[dict]:
+) -> tuple[list[dict], int | None]:
+    """Scan chat for candidate messages to reply to.
+    Returns (candidates, max_id_seen). max_id_seen is None if no messages fetched.
+    Does NOT update chat_state.last_seen_message_id — caller must do that
+    only when appropriate (see _process_live_replies_pipeline).
+    """
     bot_ids = await _collect_bot_user_ids(accounts)
     last_seen = chat_state.last_seen_message_id or 0
     messages = []
@@ -1540,9 +1559,9 @@ async def _scan_chat_for_candidates(
     ):
         messages.append(message)
     if not messages:
-        return []
+        return [], None
     messages = sorted(messages, key=lambda item: item.id)
-    candidates = []
+    candidates: list[dict] = []
     max_id = last_seen
     for message in messages:
         max_id = max(max_id, message.id)
@@ -1580,8 +1599,7 @@ async def _scan_chat_for_candidates(
                     "created_at": message.date,
                 }
             )
-    chat_state.last_seen_message_id = max_id
-    return candidates
+    return candidates, max_id
 
 
 def _is_candidate_for_reply(text: str, is_reply_to_bot: bool) -> bool:
@@ -1608,7 +1626,7 @@ async def _plan_user_reply_for_candidate(
     settings: DiscussionSettings,
     chat_state: ChatState,
     candidate: dict,
-) -> None:
+) -> bool:
     now = datetime.now(timezone.utc)
     _update_pipeline_status(
         pipeline,
@@ -1633,7 +1651,7 @@ async def _plan_user_reply_for_candidate(
             state="skipped",
             message=f"message {candidate.get('message_id')}: global limit",
         )
-        return
+        return False
     base_prob = random.uniform(0.4, 0.6)
     boosted = candidate["is_reply_to_bot"] or "?" in candidate["text"]
     decision_prob = 0.8 if boosted else base_prob
@@ -1646,7 +1664,7 @@ async def _plan_user_reply_for_candidate(
             state="skipped",
             message=f"message {candidate.get('message_id')}: probability",
         )
-        return
+        return False
     if settings.user_reply_max_age_minutes > 0:
         candidate_time = candidate["created_at"]
         if candidate_time.tzinfo is None:
@@ -1660,7 +1678,7 @@ async def _plan_user_reply_for_candidate(
                 state="skipped",
                 message=f"message {candidate.get('message_id')}: too old",
             )
-            return
+            return False
     effective_inactivity = (
         _scale_minutes(settings.inactivity_pause_minutes, reply_level, min_value=0)
         if settings.inactivity_pause_minutes > 0
@@ -1679,7 +1697,7 @@ async def _plan_user_reply_for_candidate(
                 state="skipped",
                 message=f"message {candidate.get('message_id')}: inactive chat",
             )
-            return
+            return False
     replies_count = random.choices([1, 2], weights=[80, 20])[0]
     available_weights = _ensure_discussion_weights(
         session, pipeline.id, accounts, exclude_account=primary_account.name
@@ -1693,7 +1711,7 @@ async def _plan_user_reply_for_candidate(
             state="skipped",
             message=f"message {candidate.get('message_id')}: no available userbots",
         )
-        return
+        return False
     try:
         message_topics = extract_topics_for_text(candidate["text"])
         effective_weights = _build_effective_weights(
@@ -1721,6 +1739,7 @@ async def _plan_user_reply_for_candidate(
         base_time = base_time.replace(tzinfo=timezone.utc)
     first_send_at = base_time + timedelta(minutes=random.randint(2, 10))
     second_send_at = first_send_at + timedelta(minutes=random.randint(3, 15))
+    created_any = False
     for idx, bot_weight in enumerate(selected_bots, start=1):
         account = accounts.get(bot_weight.account_name)
         if not account:
@@ -1758,6 +1777,7 @@ async def _plan_user_reply_for_candidate(
             reply_to_message_id=candidate["message_id"],
             source_message_at=base_time,
         )
+        created_any = True
         _update_pipeline_status(
             pipeline,
             category="pipeline2",
@@ -1774,6 +1794,7 @@ async def _plan_user_reply_for_candidate(
             bot_weight.account_name,
             send_at.isoformat(),
         )
+    return created_any
 
 
 def _select_user_reply_bots(
