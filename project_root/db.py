@@ -65,6 +65,7 @@ def init_db(config: Config) -> None:
         _ensure_discussion_states(session)
         _ensure_global_state(session)
         _seed_userbot_persona(session, [item.name for item in config.telegram_accounts()])
+        _sync_discussion_bot_weights(session, config)
         session.commit()
 
 
@@ -572,6 +573,42 @@ def _ensure_pipeline_states(session: Session) -> None:
                     last_run_at=None,
                 )
             )
+
+
+def _sync_discussion_bot_weights(session: Session, config: Config) -> None:
+    """Ensure all DISCUSSION pipelines have bot weights for every account (except primary).
+    Called at init_db so new userbots get weights right after restart without waiting
+    for a pipeline run to reach _ensure_discussion_weights."""
+    discussion_pipelines = (
+        session.execute(select(Pipeline).where(Pipeline.pipeline_type == "DISCUSSION"))
+        .scalars()
+        .all()
+    )
+    account_names = [item.name for item in config.telegram_accounts()]
+    for pipeline in discussion_pipelines:
+        primary = pipeline.account_name or None
+        existing = {
+            w.account_name
+            for w in session.execute(
+                select(DiscussionBotWeight).where(
+                    DiscussionBotWeight.pipeline_id == pipeline.id
+                )
+            ).scalars().all()
+        }
+        for name in account_names:
+            if name == primary:
+                continue
+            if name in existing:
+                continue
+            upsert_discussion_bot_weight(
+                session,
+                pipeline_id=pipeline.id,
+                account_name=name,
+                weight=1,
+                daily_limit=5,
+                cooldown_minutes=60,
+            )
+            existing.add(name)
 
 
 def _ensure_discussion_states(session: Session) -> None:
