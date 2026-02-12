@@ -451,7 +451,8 @@ def _seed_userbot_persona(session: Session, account_names: list[str]) -> None:
         },
     ]
     default_persona = personas[-1]
-    for idx, account_name in enumerate(sorted(account_names)):
+    # Preserve order from config (TELEGRAM_ACCOUNTS_JSON) so id order matches bot buttons
+    for idx, account_name in enumerate(account_names):
         exists = session.execute(
             select(UserbotPersona).where(UserbotPersona.account_name == account_name)
         ).scalar_one_or_none()
