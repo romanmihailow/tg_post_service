@@ -945,19 +945,20 @@ def _ensure_discussion_weights(
     exclude_account: str,
 ) -> list[DiscussionBotWeight]:
     existing = list_discussion_bot_weights(session, pipeline_id)
-    if existing:
-        return existing
+    existing_names = {w.account_name for w in existing}
     for account_name in accounts:
         if account_name == exclude_account:
             continue
-        upsert_discussion_bot_weight(
-            session,
-            pipeline_id=pipeline_id,
-            account_name=account_name,
-            weight=1,
-            daily_limit=5,
-            cooldown_minutes=60,
-        )
+        if account_name not in existing_names:
+            upsert_discussion_bot_weight(
+                session,
+                pipeline_id=pipeline_id,
+                account_name=account_name,
+                weight=1,
+                daily_limit=5,
+                cooldown_minutes=60,
+            )
+            existing_names.add(account_name)
     return list_discussion_bot_weights(session, pipeline_id)
 
 
