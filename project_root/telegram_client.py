@@ -12,6 +12,8 @@ from telethon import TelegramClient
 from telethon.errors import FloodWaitError
 from telethon.tl.custom.message import Message
 
+from project_root.config import resolve_session_path
+
 logger = logging.getLogger(__name__)
 
 
@@ -28,8 +30,9 @@ async def create_client(
     *,
     start: bool = True,
 ) -> TelegramClient:
-    """Create a Telethon client (optionally start)."""
-    client = TelegramClient(session_name, api_id, api_hash)
+    """Create a Telethon client. Session path без директории ведёт в sessions/ (volume в контейнере)."""
+    path = resolve_session_path(session_name)
+    client = TelegramClient(path, api_id, api_hash)
     if start:
         await client.start()
     else:

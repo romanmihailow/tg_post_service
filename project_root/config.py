@@ -3,9 +3,17 @@
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import List, Optional
+
+
+def resolve_session_path(session: str) -> str:
+    """Путь к сессии: если без пути (только имя) — подставляем sessions/ для монтирования в контейнере."""
+    if "/" in session or os.sep in session:
+        return session
+    return f"sessions/{session}"
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict

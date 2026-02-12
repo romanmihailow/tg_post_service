@@ -13,7 +13,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-from project_root.config import Config
+from project_root.config import Config, resolve_session_path
 
 
 def _parse_args() -> argparse.Namespace:
@@ -82,7 +82,7 @@ def main() -> int:
     else:
         credentials = account.reader
 
-    session_path = credentials.session
+    session_path = resolve_session_path(credentials.session)
     print(f"Using session: {session_path}")
     client = TelegramClient(session_path, credentials.api_id, credentials.api_hash)
     client.start()

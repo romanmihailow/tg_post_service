@@ -21,7 +21,7 @@ from telegram.ext import (
     filters,
 )
 
-from project_root.config import Config
+from project_root.config import Config, resolve_session_path
 from project_root.config import (
     BehaviorProfileConfig,
     OpenAIAccountConfig,
@@ -132,8 +132,8 @@ def _read_prompt_file(path: str) -> str:
 
 
 def _account_has_session(account: TelegramAccountConfig) -> bool:
-    session_path = f"{account.reader.session}.session"
-    return os.path.exists(session_path)
+    path = resolve_session_path(account.reader.session)
+    return os.path.isfile(f"{path}.session")
 
 
 def _can_access_account(config: Config, user_id: int | None, account_name: str) -> bool:
@@ -2054,8 +2054,8 @@ async def _try_attach_account_runtime(
     runtime_map: dict[str, AccountRuntime] = context.application.bot_data.get(
         "accounts_runtime", {}
     )
-    session_path = f"{account.reader.session}.session"
-    if not os.path.exists(session_path):
+    path = resolve_session_path(account.reader.session)
+    if not os.path.isfile(f"{path}.session"):
         return False
     try:
         behavior = config.resolve_behavior_settings(account.behavior)
