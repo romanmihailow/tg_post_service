@@ -230,6 +230,7 @@ class Config(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(Path(__file__).resolve().parents[1] / ".env"),
         env_file_encoding="utf-8",
+        extra="ignore",  # IMAGE_REPO и др. переменные только для docker compose
     )
 
     TELEGRAM_ACCOUNTS_JSON: Optional[str] = Field(default=None)

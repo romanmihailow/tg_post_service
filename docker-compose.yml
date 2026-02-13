@@ -1,5 +1,6 @@
 services:
   tg_post_service:
+    build: .
     image: ghcr.io/${IMAGE_REPO:-your_org/your_repo}:latest
     restart: unless-stopped
     healthcheck:
