@@ -1768,6 +1768,7 @@ async def _plan_user_reply_for_candidate(
                 pipeline_id=pipeline.id,
                 chat_id=candidate["chat_id"],
                 extra={"source": "pipeline2", "reply_to_message_id": candidate["message_id"]},
+                system_prompt_override=getattr(account, "system_prompt_chat", None),
             )
         except Exception:
             logger.exception("user reply skipped: openai error")

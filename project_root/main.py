@@ -78,6 +78,17 @@ async def _build_account_runtimes(config: Config) -> dict[str, AccountRuntime]:
             vision_model=openai_settings.vision_model,
             image_model=openai_settings.image_model,
         )
+        # Pipeline 2 (live replies): optional separate system prompt for chat
+        system_prompt_chat = None
+        chat_path = getattr(config, "OPENAI_SYSTEM_PROMPT_CHAT_PATH", None) or "prompts/system_prompt_chat.txt"
+        if chat_path and os.path.exists(chat_path):
+            try:
+                system_prompt_chat = _load_system_prompt(chat_path)
+            except Exception as load_err:
+                logging.getLogger(__name__).warning(
+                    "Account %s: could not load chat system prompt from %s: %s",
+                    account.name, chat_path, load_err,
+                )
         reader_client = await create_client(
             api_id=account.reader.api_id,
             api_hash=account.reader.api_hash,
@@ -123,6 +134,7 @@ async def _build_account_runtimes(config: Config) -> dict[str, AccountRuntime]:
             openai_settings=openai_settings,
             user_id=user_id,
             username=username,
+            system_prompt_chat=system_prompt_chat,
         )
     return runtimes
 

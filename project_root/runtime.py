@@ -23,3 +23,5 @@ class AccountRuntime:
     username: str | None = None
     flood_wait_until: datetime | None = None
     flood_wait_notified_until: datetime | None = None
+    # Pipeline 2 (live replies) uses this if set; otherwise openai_client.system_prompt
+    system_prompt_chat: str | None = None

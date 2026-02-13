@@ -247,6 +247,8 @@ class Config(BaseSettings):
     TG_BOT_TOKEN: Optional[str] = Field(default=None)
     TG_BOT_ADMINS_JSON: Optional[str] = Field(default=None)
     OPENAI_SYSTEM_PROMPT_PATH: str = Field(default="openai_system_prompt.txt")
+    # Optional: path to system prompt for Pipeline 2 (live chat replies). If set and file exists, used instead of OPENAI_SYSTEM_PROMPT_PATH for generate_user_reply.
+    OPENAI_SYSTEM_PROMPT_CHAT_PATH: Optional[str] = Field(default=None)
     OPENAI_TEXT_MODEL: str = Field(default="gpt-4.1-mini")
     OPENAI_VISION_MODEL: str = Field(default="gpt-4.1-mini")
     OPENAI_IMAGE_MODEL: str = Field(default="gpt-image-1")
