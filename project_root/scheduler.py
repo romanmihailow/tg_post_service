@@ -1560,8 +1560,16 @@ async def _scan_chat_for_candidates(
     ):
         messages.append(message)
     if not messages:
+        logger.debug(
+            "Pipeline 2 scan: no messages (chat=%s, last_seen=%s)",
+            chat_id, last_seen,
+        )
         return [], None
     messages = sorted(messages, key=lambda item: item.id)
+    logger.info(
+        "Pipeline 2 scan: chat=%s last_seen=%s fetched=%s msg_ids=%s..%s",
+        chat_id, last_seen, len(messages), messages[0].id, messages[-1].id,
+    )
     candidates: list[dict] = []
     max_id = last_seen
     for message in messages:
@@ -1600,6 +1608,12 @@ async def _scan_chat_for_candidates(
                     "created_at": message.date,
                 }
             )
+    if messages and not candidates:
+        logger.info(
+            "Pipeline 2 scan: 0 candidates from %s messages (chat=%s). "
+            "Candidate = has '?' or trigger phrase or reply to our bot; human, not out, no action.",
+            len(messages), chat_id,
+        )
     return candidates, max_id
 
 
