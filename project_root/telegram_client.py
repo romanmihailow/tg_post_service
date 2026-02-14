@@ -8,13 +8,58 @@ import logging
 import random
 from typing import List
 
-from telethon import TelegramClient
-from telethon.errors import FloodWaitError
+from telethon import TelegramClient, functions, types
+from telethon.errors import FloodWaitError, ChannelPrivateError, ChatWriteForbiddenError
 from telethon.tl.custom.message import Message
 
 from project_root.config import resolve_session_path
 
 logger = logging.getLogger(__name__)
+
+
+async def set_message_reaction(
+    client: TelegramClient,
+    chat_id: str,
+    message_id: int,
+    emoji: str,
+) -> bool:
+    """Set reaction (emoji) on a message. Returns True on success, False on permission/API error."""
+    if not emoji or not emoji.strip():
+        return False
+    try:
+        await client(
+            functions.messages.SendReactionRequest(
+                peer=chat_id,
+                msg_id=message_id,
+                reaction=[types.ReactionEmoji(emoticon=emoji.strip())],
+            )
+        )
+        return True
+    except (ChannelPrivateError, ChatWriteForbiddenError, ValueError) as e:
+        logger.warning(
+            "reaction failed (no permission): chat=%s msg_id=%s emoji=%s err=%s",
+            chat_id,
+            message_id,
+            emoji,
+            e,
+        )
+        return False
+    except FloodWaitError as exc:
+        logger.warning(
+            "reaction flood wait: chat=%s msg_id=%s sleep=%s",
+            chat_id,
+            message_id,
+            exc.seconds,
+        )
+        return False
+    except Exception:
+        logger.exception(
+            "reaction failed: chat=%s msg_id=%s emoji=%s",
+            chat_id,
+            message_id,
+            emoji,
+        )
+        return False
 
 
 class FloodWaitBlocked(Exception):

@@ -8,9 +8,13 @@ import logging
 import os
 import random
 import re
+from collections import namedtuple
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Any, List
+
+# Candidate post from channel with Telegram message_id (P0: no search by text)
+PostCandidate = namedtuple("PostCandidate", ["message_id", "text", "created_at"])
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -26,7 +30,6 @@ from project_root.db import (
     get_pipeline_by_name,
     get_pipeline_sources,
     get_pipeline_state,
-    get_recent_post_history,
     get_session,
     get_userbot_persona,
     list_discussion_bot_weights,
@@ -58,6 +61,7 @@ from project_root.telegram_client import (
     send_image_with_caption,
     send_media_from_message,
     send_text,
+    set_message_reaction,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,6 +82,22 @@ PERSONA_PROFILE_OVERRIDES: dict[str, dict[str, str]] = {
     "t9014429801": {"display_name": "Илья Морозов", "gender": "male"},
     "t9083516765": {"display_name": "Николай Лебедев", "gender": "male"},
 }
+
+# In-memory reaction throttling (Pipeline 1). Resets on process restart.
+_REACTION_LAST_AT: dict[tuple[str, str], datetime] = {}  # (account_name, chat_id)
+_REACTION_TODAY: dict[tuple[str, str, str], int] = {}  # (account_name, chat_id, date_str)
+# (chat_id, message_id) -> date_iso: already reacted to this post today (P1)
+_REACTION_REACTED_TODAY: dict[tuple[str, int], str] = {}
+_REACTION_DAY: str | None = None  # YYYY-MM-DD for daily reset
+
+
+# Keywords that suggest sensitive content (conflict/tragedy) — avoid 🔥
+_REACTION_SENSITIVE_KEYWORDS = frozenset(
+    [
+        "конфликт", "войн", "трагеди", "санкц", "обстрел", "атак", "жертв",
+        "погиб", "умер", "смерт", "теракт", "катастроф", "авари",
+    ]
+)
 
 
 def _update_pipeline_status(
@@ -169,6 +189,198 @@ async def _backfill_post_history_from_channel(
     for text in reversed(messages):
         _store_recent_post(session, pipeline_id, text, window_size)
     return len(messages)
+
+
+async def fetch_recent_posts_from_channel(
+    client,
+    channel: str,
+    limit: int,
+    min_text_length: int,
+) -> list[PostCandidate]:
+    """Fetch recent posts from channel with message_id (P0: direct id, no search by text)."""
+    result: list[PostCandidate] = []
+    async for message in client.iter_messages(channel, limit=limit * 2):
+        text = (message.message or "").strip()
+        if len(text) < min_text_length:
+            continue
+        created = message.date
+        if created and getattr(created, "tzinfo", None) is None:
+            created = created.replace(tzinfo=timezone.utc)
+        result.append(
+            PostCandidate(message_id=message.id, text=text, created_at=created or datetime.now(timezone.utc))
+        )
+        if len(result) >= limit:
+            break
+    return result
+
+
+async def _resolve_post_message_id(client, channel: str, text: str, limit: int = 50) -> int | None:
+    """Find message_id in channel by matching text. Returns None if not found."""
+    if not text or not text.strip():
+        return None
+    needle = text.strip()
+    async for message in client.iter_messages(channel, limit=limit):
+        msg_text = (message.message or "").strip()
+        if not msg_text:
+            continue
+        if msg_text == needle or needle in msg_text or msg_text in needle:
+            return message.id
+    return None
+
+
+def _pick_reaction_emoji(text: str, emojis: list[str]) -> tuple[str, bool]:
+    """Pick emoji for reaction. Avoid 🔥 for sensitive content. Returns (emoji, sensitive)."""
+    if not emojis:
+        return ("👍", False)
+    norm = (text or "").strip().lower()
+    if not norm:
+        return (random.choice(emojis), False)
+    has_sensitive = any(kw in norm for kw in _REACTION_SENSITIVE_KEYWORDS)
+    if has_sensitive and "🤔" in emojis:
+        return ("🤔", True)
+    if has_sensitive and "🔥" in emojis:
+        safe = [e for e in emojis if e != "🔥"]
+        return (random.choice(safe) if safe else emojis[0], True)
+    return (random.choice(emojis), False)
+
+
+def _reaction_ensure_date_reset(now: datetime) -> None:
+    """P1: clear daily structures when date changes (no restart)."""
+    global _REACTION_DAY
+    today = now.strftime("%Y-%m-%d")
+    if _REACTION_DAY is not None and _REACTION_DAY != today:
+        _REACTION_TODAY.clear()
+        _REACTION_REACTED_TODAY.clear()
+    _REACTION_DAY = today
+
+
+def _filter_bots_for_reaction(
+    available: list,
+    chat_id: str,
+    now: datetime,
+    cooldown_minutes: int,
+    daily_limit: int,
+) -> list:
+    """Filter bots by reaction-specific cooldown and daily limit (in-memory)."""
+    today = now.strftime("%Y-%m-%d")
+    result = []
+    for item in available:
+        account_name = item.account_name
+        key_last = (account_name, chat_id)
+        key_today = (account_name, chat_id, today)
+        last_at = _REACTION_LAST_AT.get(key_last)
+        if last_at:
+            elapsed = (now - last_at).total_seconds() / 60
+            if elapsed < cooldown_minutes:
+                continue
+        count = _REACTION_TODAY.get(key_today, 0)
+        if count >= daily_limit:
+            continue
+        result.append(item)
+    return result
+
+
+def _update_reaction_state(account_name: str, chat_id: str, now: datetime) -> None:
+    """Update in-memory reaction state after successful reaction."""
+    key_last = (account_name, chat_id)
+    key_today = (account_name, chat_id, now.strftime("%Y-%m-%d"))
+    _REACTION_LAST_AT[key_last] = now
+    _REACTION_TODAY[key_today] = _REACTION_TODAY.get(key_today, 0) + 1
+
+
+async def _try_set_reaction_on_news_post(
+    config: Config,
+    accounts: dict[str, AccountRuntime],
+    primary_account: AccountRuntime,
+    pipeline: Pipeline,
+    source_channel: str,
+    news_text: str,
+    available_bots: list,
+    selected_bots_for_replies: list,
+    now: datetime,
+    *,
+    selected_post_message_id: int | None = None,
+    selected_post_chat_id: str | None = None,
+) -> None:
+    """Pipeline 1: optionally set reaction on the selected news post. No-op if disabled/skipped."""
+    if not getattr(config, "REACTIONS_ENABLED", False):
+        return
+    _reaction_ensure_date_reset(now)
+    chat_id = selected_post_chat_id or source_channel
+    msg_id: int | None = selected_post_message_id
+    if msg_id is None:
+        msg_id = await _resolve_post_message_id(
+            primary_account.reader_client, source_channel, news_text
+        )
+    if msg_id is None:
+        logger.info(
+            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=message_id_missing",
+            chat_id,
+            0,
+        )
+        return
+    today = now.strftime("%Y-%m-%d")
+    if _REACTION_REACTED_TODAY.get((chat_id, msg_id)) == today:
+        logger.info(
+            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=already_reacted_today",
+            chat_id,
+            msg_id,
+        )
+        return
+    if random.random() >= config.REACTION_PROBABILITY:
+        logger.info(
+            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=probability",
+            chat_id,
+            msg_id,
+        )
+        return
+    cooldown = getattr(config, "REACTION_COOLDOWN_MINUTES", 30)
+    daily_limit = getattr(config, "REACTION_DAILY_LIMIT_PER_BOT", 10)
+    emojis = config.reaction_emojis_list()
+    reaction_candidates = _filter_bots_for_reaction(
+        available_bots, chat_id, now, cooldown, daily_limit
+    )
+    if not reaction_candidates:
+        logger.info(
+            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=limit",
+            chat_id,
+            msg_id,
+        )
+        return
+    reply_names = {b.account_name for b in selected_bots_for_replies}
+    preferred = [b for b in reaction_candidates if b.account_name not in reply_names]
+    bot_row = random.choice(preferred) if preferred else random.choice(reaction_candidates)
+    account = accounts.get(bot_row.account_name)
+    if not account or not account.writer_client:
+        logger.warning(
+            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s bot=%s why=no_permission",
+            chat_id,
+            msg_id,
+            bot_row.account_name,
+        )
+        return
+    emoji, sensitive = _pick_reaction_emoji(news_text, emojis)
+    ok = await set_message_reaction(
+        account.writer_client, chat_id, msg_id, emoji
+    )
+    if ok:
+        _update_reaction_state(bot_row.account_name, chat_id, now)
+        _REACTION_REACTED_TODAY[(chat_id, msg_id)] = today
+        logger.info(
+            "reaction set reason=pipeline1_news chat=%s msg_id=%s bot=%s emoji=%s sensitive=%s",
+            chat_id,
+            msg_id,
+            bot_row.account_name,
+            emoji,
+            sensitive,
+        )
+    else:
+        logger.warning(
+            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s bot=%s why=api_error",
+            chat_id,
+            msg_id,
+            bot_row.account_name,
+        )
 
 
 def _load_recent_topics(state: DiscussionState) -> list[str]:
@@ -580,27 +792,16 @@ async def _process_discussion_pipeline(
         )
         return sent_any
     k = random.randint(settings.k_min, settings.k_max)
-    candidates_all = get_recent_post_history(session, source_pipeline.id, k)
-    if _post_history_is_stale(candidates_all, now):
-        backfilled = await _backfill_post_history_from_channel(
-            session,
-            primary_account.reader_client,
-            source_channel=source_pipeline.destination_channel,
-            pipeline_id=source_pipeline.id,
-            min_text_length=config.MIN_TEXT_LENGTH,
-            window_size=config.DEDUP_WINDOW_SIZE,
-        )
-        if backfilled:
-            logger.info(
-                "Discussion pipeline %s: backfilled %s posts from %s",
-                pipeline.name,
-                backfilled,
-                source_pipeline.destination_channel,
-            )
-            candidates_all = get_recent_post_history(session, source_pipeline.id, k)
+    source_channel = source_pipeline.destination_channel
+    candidates_all = await fetch_recent_posts_from_channel(
+        primary_account.reader_client,
+        source_channel,
+        limit=k,
+        min_text_length=config.MIN_TEXT_LENGTH,
+    )
     if not candidates_all:
         logger.info(
-            "discussion skipped: no candidate posts in post_history (pipeline=%s)",
+            "discussion skipped: no candidate posts in channel (pipeline=%s)",
             pipeline.name,
         )
         _update_pipeline_status(
@@ -615,7 +816,7 @@ async def _process_discussion_pipeline(
     candidates = candidates_all
     if state.last_source_post_id and len(candidates_all) > 1:
         filtered = [
-            item for item in candidates_all if item.id != state.last_source_post_id
+            item for item in candidates_all if item.message_id != state.last_source_post_id
         ]
         if filtered:
             candidates = filtered
@@ -694,7 +895,7 @@ async def _process_discussion_pipeline(
             message_topics,
             pipeline_id=pipeline.id,
             chat_id=settings.target_chat,
-            message_id=selected_item.id,
+            message_id=selected_item.message_id,
         )
     except Exception:
         logger.warning(
@@ -727,7 +928,7 @@ async def _process_discussion_pipeline(
             roles,
             pipeline_id=pipeline.id,
             chat_id=settings.target_chat,
-            extra={"source": "pipeline1", "post_id": selected_item.id},
+            extra={"source": "pipeline1", "post_id": selected_item.message_id},
         )
     except Exception:
         logger.exception("Discussion pipeline %s: OpenAI generate failed", pipeline.name)
@@ -780,8 +981,8 @@ async def _process_discussion_pipeline(
     question_message_id = reply_message.id
     state.question_message_id = question_message_id
     state.question_created_at = now
-    state.last_source_post_id = selected_item.id
-    state.last_source_post_at = selected_item.created_at
+    state.last_source_post_id = selected_item.message_id
+    state.last_source_post_at = _as_utc(selected_item.created_at) if selected_item.created_at else now
     _update_recent_topics(state, extract_topics_for_text(news_text))
     state.expires_at = now + timedelta(minutes=60)
     state.replies_planned = len(replies)
@@ -803,6 +1004,19 @@ async def _process_discussion_pipeline(
             send_at=send_at,
             reply_to_message_id=None,
         )
+    await _try_set_reaction_on_news_post(
+        config,
+        accounts,
+        primary_account,
+        pipeline,
+        source_channel=source_channel,
+        news_text=news_text,
+        available_bots=available,
+        selected_bots_for_replies=selected_bots,
+        now=now,
+        selected_post_message_id=selected_item.message_id,
+        selected_post_chat_id=source_channel,
+    )
     text_cost = _estimate_text_cost(
         in_t + in_t2,
         out_t + out_t2,

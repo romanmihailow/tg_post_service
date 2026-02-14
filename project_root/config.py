@@ -285,6 +285,46 @@ class Config(BaseSettings):
     GROUP_SAFETY_LEVEL: Optional[int] = Field(default=None)
     GROUP_CONTENT_LEVEL: Optional[int] = Field(default=None)
 
+    # Pipeline 1 reactions (MVP: only on news posts)
+    REACTIONS_ENABLED: bool = Field(default=False)
+    REACTION_PROBABILITY: float = Field(default=0.35)
+    REACTION_DAILY_LIMIT_PER_BOT: int = Field(default=10)
+    REACTION_COOLDOWN_MINUTES: int = Field(default=30)
+    REACTION_EMOJIS: str = Field(default='["👍","🔥","🤔"]')
+
+    @field_validator("REACTION_PROBABILITY", mode="before")
+    @classmethod
+    def validate_reaction_probability(cls, value: object) -> float:
+        if value is None or value == "":
+            return 0.35
+        try:
+            numeric = float(value)
+        except (TypeError, ValueError) as exc:
+            raise ValueError("REACTION_PROBABILITY must be a number") from exc
+        if numeric < 0 or numeric > 1.0:
+            raise ValueError("REACTION_PROBABILITY must be between 0 and 1")
+        return numeric
+
+    @field_validator("REACTION_EMOJIS", mode="before")
+    @classmethod
+    def parse_reaction_emojis(cls, value: object) -> str:
+        if value is None or value == "":
+            return '["👍","🔥","🤔"]'
+        return value
+
+    def reaction_emojis_list(self) -> List[str]:
+        """Parse REACTION_EMOJIS JSON to list. Fallback to default if invalid."""
+        raw = (self.REACTION_EMOJIS or "").strip()
+        if not raw:
+            return ["👍", "🔥", "🤔"]
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(e).strip() for e in parsed if str(e).strip()]
+        except json.JSONDecodeError:
+            pass
+        return ["👍", "🔥", "🤔"]
+
     @property
     def pipelines(self) -> List[PipelineConfig]:
         """Return configured pipelines from PIPELINES_JSON or fallback settings."""
