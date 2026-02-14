@@ -142,7 +142,6 @@ def _can_access_account(config: Config, user_id: int | None, account_name: str) 
     return "*" in allowed or account_name in allowed
 
 
-
 MENU_MAIN = "main"
 MENU_ACCOUNTS = "accounts"
 MENU_ACCOUNT = "account"
