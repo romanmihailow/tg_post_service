@@ -179,10 +179,14 @@ class OpenAIClient:
         chat_id: str | None = None,
         extra: dict[str, Any] | None = None,
         system_prompt_override: str | None = None,
-    ) -> Tuple[str, int, int, int, dict[str, Any]]:
+        allowed_reactions: list[str] | None = None,
+        model_driven_reaction: bool = False,
+        reaction_null_rate: float = 0.65,
+    ) -> Tuple[str, Optional[str], int, int, int, dict[str, Any]]:
         """Generate a short reply to a user message (Pipeline 2 live replies).
-        Returns (text, in_tokens, out_tokens, total_tokens, gen_info).
-        gen_info: {preset_idx, length_hint} for observability."""
+        Returns (reply_text, reaction_emoji, in_tokens, out_tokens, total_tokens, gen_info).
+        reaction_emoji: str | None — emoji to put on user's message (when model_driven_reaction).
+        gen_info: {preset_idx, length_hint, reaction_emoji} for observability."""
         context_block = "\n".join(
             f"- {text}" for text in context_messages if text.strip()
         )
@@ -298,6 +302,24 @@ class OpenAIClient:
                 length_hint,
             )
 
+        json_block = ""
+        if model_driven_reaction and allowed_reactions:
+            allowed_str = json.dumps(allowed_reactions, ensure_ascii=False)
+            null_pct = int(reaction_null_rate * 100)
+            json_block = (
+                "\n\nФОРМАТ ОТВЕТА — строго JSON:\n"
+                '{"reply_text":"...","reaction_emoji":"👍"}\n'
+                'или {"reply_text":"...","reaction_emoji":null}\n'
+                f"- reply_text: 1–2 предложения по правилам выше, без эмодзи в тексте.\n"
+                f"- reaction_emoji: null примерно в {null_pct}% случаев; иначе ОДИН эмодзи ТОЛЬКО из списка: {allowed_str}\n"
+                "- НЕ добавляй эмодзи в reply_text — они передаются отдельно.\n"
+                "- Если сообщение токсичное/конфликтное — предпочитай нейтральные (🤔/😅), избегай 🔥.\n"
+            )
+            if logger.isEnabledFor(logging.DEBUG):
+                preview = allowed_reactions[:50] if len(allowed_reactions) <= 50 else allowed_reactions[:50] + ["…"]
+                logger.debug("allowed_reactions (first 50): %s", preview)
+
+        answer_label = "Ответ (JSON):" if (model_driven_reaction and allowed_reactions) else "Ответ:"
         prompt = (
             f"{common_rules}"
             f"{preset_block}"
@@ -306,11 +328,11 @@ class OpenAIClient:
             f"{context_block}\n\n"
             "Сообщение пользователя, на которое нужно ответить:\n"
             f"{source_text}\n\n"
-            "Ответ:"
+            f"{json_block}\n{answer_label}"
         )
 
         system_for_call = system_prompt_override if system_prompt_override else self.system_prompt
-        text, in_tokens, out_tokens, total_tokens = self._with_retries(
+        raw_text, in_tokens, out_tokens, total_tokens = self._with_retries(
             lambda: self._responses_text(system_for_call, prompt)
         )
         _log_openai_usage(
@@ -323,7 +345,32 @@ class OpenAIClient:
             total_tokens=total_tokens,
             extra=extra or {},
         )
-        return text.strip(), in_tokens, out_tokens, total_tokens, gen_info
+
+        reply_text = raw_text.strip()
+        reaction_emoji: Optional[str] = None
+        if model_driven_reaction and allowed_reactions:
+            try:
+                data = json.loads(reply_text)
+                if isinstance(data, dict):
+                    reply_text = (data.get("reply_text") or "").strip()
+                    raw_emoji = data.get("reaction_emoji")
+                    if raw_emoji is not None and str(raw_emoji).strip():
+                        e = str(raw_emoji).strip()
+                        if e in allowed_reactions:
+                            reaction_emoji = e
+                        else:
+                            if logger.isEnabledFor(logging.DEBUG):
+                                logger.debug("reaction_emoji not in allowed: %r raw_json=%s", e, raw_text[:200])
+            except json.JSONDecodeError as exc:
+                if logger.isEnabledFor(logging.DEBUG):
+                    logger.debug("generate_user_reply JSON parse failed: %s raw=%s", exc, raw_text[:200])
+                reply_text = raw_text.strip()
+                reaction_emoji = None
+            gen_info["reaction_emoji"] = reaction_emoji
+
+        if not model_driven_reaction or not allowed_reactions:
+            return reply_text, None, in_tokens, out_tokens, total_tokens, gen_info
+        return reply_text, reaction_emoji, in_tokens, out_tokens, total_tokens, gen_info
 
     def _responses_text(
         self, system_prompt: str, user_text: str

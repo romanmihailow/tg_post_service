@@ -300,6 +300,9 @@ class Config(BaseSettings):
     CHAT_REACTION_EMOJIS: str = Field(default='["👍","🤔","😂","🔥"]')
     CHAT_REACTION_ON_USER_MESSAGE: bool = Field(default=True)
     CHAT_REACTION_ON_BOT_MESSAGE: bool = Field(default=False)
+    # Pipeline 2: model-driven reaction (OpenAI returns reply_text + reaction_emoji in one call)
+    CHAT_REACTIONS_MODEL_DRIVEN: bool = Field(default=False)
+    CHAT_REACTIONS_MODEL_NULL_RATE: float = Field(default=0.65)  # target share of null (no reaction)
 
     @field_validator("REACTION_PROBABILITY", mode="before")
     @classmethod

@@ -55,6 +55,7 @@ from project_root.runtime import AccountRuntime
 from project_root.telegram_client import (
     download_message_photo,
     FloodWaitBlocked,
+    get_available_reaction_emojis,
     get_new_messages,
     pick_album_caption_message,
     send_reply_text,
@@ -348,6 +349,8 @@ async def _try_set_reaction_on_chat_message(
     """Pipeline 2: optionally set reaction on user message we replied to."""
     if not getattr(config, "CHAT_REACTIONS_ENABLED", False):
         return
+    if getattr(config, "CHAT_REACTIONS_MODEL_DRIVEN", False):
+        return  # reactions set at plan-time by OpenAI
     if not getattr(config, "CHAT_REACTION_ON_USER_MESSAGE", True):
         return
     _chat_reaction_ensure_date_reset(now)
@@ -2175,6 +2178,15 @@ async def _plan_user_reply_for_candidate(
     second_send_at = first_send_at + timedelta(minutes=random.randint(3, 15))
     created_any = False
     last_used: str | None = None
+    model_driven = getattr(config, "CHAT_REACTIONS_MODEL_DRIVEN", False)
+    allowed_reactions: list[str] = []
+    if model_driven and getattr(config, "CHAT_REACTIONS_ENABLED", False):
+        allowed_reactions = await get_available_reaction_emojis(
+            primary_account.reader_client, candidate["chat_id"]
+        )
+        if not allowed_reactions:
+            allowed_reactions = config.chat_reaction_emojis_list()
+    null_rate = getattr(config, "CHAT_REACTIONS_MODEL_NULL_RATE", 0.65)
     for idx, bot_weight in enumerate(selected_bots, start=1):
         account = accounts.get(bot_weight.account_name)
         if not account:
@@ -2183,7 +2195,7 @@ async def _plan_user_reply_for_candidate(
             role_label, persona_meta = _build_persona_prompt_and_meta(
                 session, bot_weight.account_name
             )
-            reply_text, _, _, _, gen_info = await asyncio.to_thread(
+            reply_text, reaction_emoji, _, _, _, gen_info = await asyncio.to_thread(
                 account.openai_client.generate_user_reply,
                 source_text=candidate["text"],
                 context_messages=context_messages,
@@ -2197,6 +2209,9 @@ async def _plan_user_reply_for_candidate(
                     "account_name": bot_weight.account_name,
                 },
                 system_prompt_override=getattr(account, "system_prompt_chat", None),
+                allowed_reactions=allowed_reactions if model_driven else None,
+                model_driven_reaction=model_driven,
+                reaction_null_rate=null_rate,
             )
         except Exception:
             logger.exception("user reply skipped: openai error")
@@ -2233,6 +2248,47 @@ async def _plan_user_reply_for_candidate(
         )
         created_any = True
         last_used = bot_weight.account_name
+        if (
+            model_driven
+            and reaction_emoji
+            and getattr(config, "CHAT_REACTIONS_ENABLED", False)
+            and account.writer_client
+        ):
+            _chat_reaction_ensure_date_reset(now)
+            logger.info(
+                "chat reaction model candidate chat=%s msg_id=%s emoji=%s allowed_count=%s source=model",
+                candidate["chat_id"],
+                candidate["message_id"],
+                reaction_emoji,
+                len(allowed_reactions),
+            )
+            ok = await set_message_reaction(
+                account.writer_client,
+                candidate["chat_id"],
+                candidate["message_id"],
+                reaction_emoji,
+            )
+            if ok:
+                _update_chat_reaction_state(
+                    bot_weight.account_name,
+                    candidate["chat_id"],
+                    candidate["message_id"],
+                    now,
+                )
+                logger.info(
+                    "chat reaction set reason=pipeline2_user_message chat=%s msg_id=%s bot=%s emoji=%s source=model",
+                    candidate["chat_id"],
+                    candidate["message_id"],
+                    bot_weight.account_name,
+                    reaction_emoji,
+                )
+            else:
+                logger.info(
+                    "chat reaction skipped reason=pipeline2_user_message chat=%s msg_id=%s bot=%s why=api_error source=model",
+                    candidate["chat_id"],
+                    candidate["message_id"],
+                    bot_weight.account_name,
+                )
         _update_pipeline_status(
             pipeline,
             category="pipeline2",

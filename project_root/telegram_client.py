@@ -11,6 +11,12 @@ from typing import List
 from telethon import TelegramClient, functions, types
 from telethon.errors import FloodWaitError, ChannelPrivateError, ChatWriteForbiddenError
 from telethon.tl.custom.message import Message
+from telethon.tl.types import (
+    ChatReactionsAll,
+    ChatReactionsNone,
+    ChatReactionsSome,
+    ReactionEmoji,
+)
 
 from project_root.config import resolve_session_path
 
@@ -67,6 +73,61 @@ async def set_message_reaction(
         if logger.isEnabledFor(logging.DEBUG):
             logger.exception("reaction exception detail")
         return False
+
+
+async def get_available_reaction_emojis(
+    client: TelegramClient,
+    chat_id: str,
+) -> list[str]:
+    """Get list of emoji strings allowed as reactions in this chat.
+    Returns empty list on error (fallback to config CHAT_REACTION_EMOJIS).
+    MVP: only standard emoji (ReactionEmoji), not custom_emoji_id."""
+    try:
+        entity = await client.get_entity(chat_id)
+        full = None
+        if hasattr(entity, "broadcast") or (hasattr(entity, "megagroup") and entity.megagroup):
+            full = await client(functions.channels.GetFullChannelRequest(entity))
+        else:
+            full = await client(functions.messages.GetFullChatRequest(entity.id))
+        full_chat = getattr(full, "full_chat", full)
+        reactions = getattr(full_chat, "available_reactions", None)
+        if reactions is None:
+            return []
+        if isinstance(reactions, ChatReactionsNone):
+            return []
+        if isinstance(reactions, ChatReactionsSome):
+            result: list[str] = []
+            for r in getattr(reactions, "reactions", []) or []:
+                if isinstance(r, ReactionEmoji) and getattr(r, "emoticon", None):
+                    e = (r.emoticon or "").strip()
+                    if e:
+                        result.append(e)
+            return result
+        if isinstance(reactions, ChatReactionsAll):
+            avail = await client(functions.messages.GetAvailableReactionsRequest(hash=0))
+            if not hasattr(avail, "reactions"):
+                return []
+            result = []
+            for item in getattr(avail, "reactions", []) or []:
+                r = getattr(item, "reaction", None)
+                if isinstance(r, ReactionEmoji):
+                    e = getattr(r, "emoticon", None)
+                    if e and str(e).strip():
+                        result.append(str(e).strip())
+                elif isinstance(r, str) and r.strip():
+                    result.append(r.strip())
+            return result
+        return []
+    except Exception as e:
+        logger.warning(
+            "get_available_reaction_emojis failed chat=%s err_type=%s err=%s",
+            chat_id,
+            type(e).__name__,
+            e,
+        )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.debug("allowed_reactions fallback: using config list")
+        return []
 
 
 class FloodWaitBlocked(Exception):
