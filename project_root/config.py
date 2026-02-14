@@ -285,12 +285,21 @@ class Config(BaseSettings):
     GROUP_SAFETY_LEVEL: Optional[int] = Field(default=None)
     GROUP_CONTENT_LEVEL: Optional[int] = Field(default=None)
 
-    # Pipeline 1 reactions (MVP: only on news posts)
+    # Pipeline 1 reactions (channel news posts)
     REACTIONS_ENABLED: bool = Field(default=False)
     REACTION_PROBABILITY: float = Field(default=0.35)
     REACTION_DAILY_LIMIT_PER_BOT: int = Field(default=10)
     REACTION_COOLDOWN_MINUTES: int = Field(default=30)
     REACTION_EMOJIS: str = Field(default='["👍","🔥","🤔"]')
+
+    # Pipeline 2 chat reactions (on user messages we reply to)
+    CHAT_REACTIONS_ENABLED: bool = Field(default=False)
+    CHAT_REACTION_PROBABILITY: float = Field(default=0.15)
+    CHAT_REACTION_DAILY_LIMIT_PER_BOT: int = Field(default=20)
+    CHAT_REACTION_COOLDOWN_MINUTES: int = Field(default=10)
+    CHAT_REACTION_EMOJIS: str = Field(default='["👍","🤔","😂","🔥"]')
+    CHAT_REACTION_ON_USER_MESSAGE: bool = Field(default=True)
+    CHAT_REACTION_ON_BOT_MESSAGE: bool = Field(default=False)
 
     @field_validator("REACTION_PROBABILITY", mode="before")
     @classmethod
@@ -324,6 +333,19 @@ class Config(BaseSettings):
         except json.JSONDecodeError:
             pass
         return ["👍", "🔥", "🤔"]
+
+    def chat_reaction_emojis_list(self) -> List[str]:
+        """Parse CHAT_REACTION_EMOJIS JSON to list. Fallback if invalid."""
+        raw = (getattr(self, "CHAT_REACTION_EMOJIS", None) or "").strip()
+        if not raw:
+            return ["👍", "🤔", "😂", "🔥"]
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(e).strip() for e in parsed if str(e).strip()]
+        except json.JSONDecodeError:
+            pass
+        return ["👍", "🤔", "😂", "🔥"]
 
     @property
     def pipelines(self) -> List[PipelineConfig]:

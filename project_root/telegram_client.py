@@ -36,11 +36,14 @@ async def set_message_reaction(
         )
         return True
     except (ChannelPrivateError, ChatWriteForbiddenError, ValueError) as e:
+        why = "reactions_not_allowed" if isinstance(e, ChatWriteForbiddenError) else "no_permission"
         logger.warning(
-            "reaction failed (no permission): chat=%s msg_id=%s emoji=%s err=%s",
+            "reaction failed why=%s chat=%s msg_id=%s emoji=%s err_type=%s err=%s",
+            why,
             chat_id,
             message_id,
             emoji,
+            type(e).__name__,
             e,
         )
         return False
@@ -52,13 +55,17 @@ async def set_message_reaction(
             exc.seconds,
         )
         return False
-    except Exception:
-        logger.exception(
-            "reaction failed: chat=%s msg_id=%s emoji=%s",
+    except Exception as e:
+        logger.warning(
+            "reaction failed why=api_error chat=%s msg_id=%s emoji=%s err_type=%s err=%s",
             chat_id,
             message_id,
             emoji,
+            type(e).__name__,
+            e,
         )
+        if logger.isEnabledFor(logging.DEBUG):
+            logger.exception("reaction exception detail")
         return False
 
 

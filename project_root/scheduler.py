@@ -83,12 +83,18 @@ PERSONA_PROFILE_OVERRIDES: dict[str, dict[str, str]] = {
     "t9083516765": {"display_name": "Николай Лебедев", "gender": "male"},
 }
 
-# In-memory reaction throttling (Pipeline 1). Resets on process restart.
+# In-memory reaction throttling (Pipeline 1 channel). Resets on process restart.
 _REACTION_LAST_AT: dict[tuple[str, str], datetime] = {}  # (account_name, chat_id)
 _REACTION_TODAY: dict[tuple[str, str, str], int] = {}  # (account_name, chat_id, date_str)
 # (chat_id, message_id) -> date_iso: already reacted to this post today (P1)
 _REACTION_REACTED_TODAY: dict[tuple[str, int], str] = {}
 _REACTION_DAY: str | None = None  # YYYY-MM-DD for daily reset
+
+# In-memory chat reaction throttling (Pipeline 2). Resets on process restart.
+_CHAT_REACTION_LAST_AT: dict[tuple[str, str], datetime] = {}
+_CHAT_REACTION_TODAY: dict[tuple[str, str, str], int] = {}
+_CHAT_REACTION_REACTED_TODAY: dict[tuple[str, int], str] = {}
+_CHAT_REACTION_DAY: str | None = None
 
 
 # Keywords that suggest sensitive content (conflict/tragedy) — avoid 🔥
@@ -98,6 +104,9 @@ _REACTION_SENSITIVE_KEYWORDS = frozenset(
         "погиб", "умер", "смерт", "теракт", "катастроф", "авари",
     ]
 )
+
+# P1: Female grammar fix (imported from female_grammar_fix).
+from project_root.female_grammar_fix import fix_female_grammar_in_reply
 
 
 def _update_pipeline_status(
@@ -288,6 +297,121 @@ def _update_reaction_state(account_name: str, chat_id: str, now: datetime) -> No
     _REACTION_TODAY[key_today] = _REACTION_TODAY.get(key_today, 0) + 1
 
 
+def _chat_reaction_ensure_date_reset(now: datetime) -> None:
+    """Reset chat reaction daily structures when date changes."""
+    global _CHAT_REACTION_DAY
+    today = now.strftime("%Y-%m-%d")
+    if _CHAT_REACTION_DAY is not None and _CHAT_REACTION_DAY != today:
+        _CHAT_REACTION_TODAY.clear()
+        _CHAT_REACTION_REACTED_TODAY.clear()
+    _CHAT_REACTION_DAY = today
+
+
+def _can_bot_chat_react(
+    account_name: str,
+    chat_id: str,
+    now: datetime,
+    cooldown_minutes: int,
+    daily_limit: int,
+) -> bool:
+    """Check if bot can put a chat reaction (cooldown and daily limit)."""
+    today = now.strftime("%Y-%m-%d")
+    key_last = (account_name, chat_id)
+    key_today = (account_name, chat_id, today)
+    last_at = _CHAT_REACTION_LAST_AT.get(key_last)
+    if last_at:
+        elapsed = (now - last_at).total_seconds() / 60
+        if elapsed < cooldown_minutes:
+            return False
+    count = _CHAT_REACTION_TODAY.get(key_today, 0)
+    return count < daily_limit
+
+
+def _update_chat_reaction_state(account_name: str, chat_id: str, msg_id: int, now: datetime) -> None:
+    """Update in-memory chat reaction state after successful reaction."""
+    today = now.strftime("%Y-%m-%d")
+    _CHAT_REACTION_LAST_AT[(account_name, chat_id)] = now
+    key_today = (account_name, chat_id, today)
+    _CHAT_REACTION_TODAY[key_today] = _CHAT_REACTION_TODAY.get(key_today, 0) + 1
+    _CHAT_REACTION_REACTED_TODAY[(chat_id, msg_id)] = today
+
+
+async def _try_set_reaction_on_chat_message(
+    config: Config,
+    accounts: dict[str, AccountRuntime],
+    account_name: str,
+    chat_id: str,
+    message_id: int,
+    message_text: str,
+    now: datetime,
+) -> None:
+    """Pipeline 2: optionally set reaction on user message we replied to."""
+    if not getattr(config, "CHAT_REACTIONS_ENABLED", False):
+        return
+    if not getattr(config, "CHAT_REACTION_ON_USER_MESSAGE", True):
+        return
+    _chat_reaction_ensure_date_reset(now)
+    today = now.strftime("%Y-%m-%d")
+    if _CHAT_REACTION_REACTED_TODAY.get((chat_id, message_id)) == today:
+        logger.info(
+            "chat reaction skipped reason=pipeline2_user_message chat=%s msg_id=%s why=already_reacted_today",
+            chat_id,
+            message_id,
+        )
+        return
+    if random.random() >= getattr(config, "CHAT_REACTION_PROBABILITY", 0.15):
+        logger.info(
+            "chat reaction skipped reason=pipeline2_user_message chat=%s msg_id=%s why=probability",
+            chat_id,
+            message_id,
+        )
+        return
+    cooldown = getattr(config, "CHAT_REACTION_COOLDOWN_MINUTES", 10)
+    daily_limit = getattr(config, "CHAT_REACTION_DAILY_LIMIT_PER_BOT", 20)
+    if not _can_bot_chat_react(account_name, chat_id, now, cooldown, daily_limit):
+        logger.info(
+            "chat reaction skipped reason=pipeline2_user_message chat=%s msg_id=%s why=limit",
+            chat_id,
+            message_id,
+        )
+        return
+    account = accounts.get(account_name)
+    if not account or not account.writer_client:
+        logger.info(
+            "chat reaction skipped reason=pipeline2_user_message chat=%s msg_id=%s bot=%s why=no_permission",
+            chat_id,
+            message_id,
+            account_name,
+        )
+        return
+    emojis = config.chat_reaction_emojis_list()
+    emoji, _ = _pick_reaction_emoji(message_text, emojis)
+    logger.info(
+        "chat reaction attempt reason=pipeline2_user_message chat=%s msg_id=%s bot=%s emoji=%s",
+        chat_id,
+        message_id,
+        account_name,
+        emoji,
+    )
+    ok = await set_message_reaction(account.writer_client, chat_id, message_id, emoji)
+    if ok:
+        _update_chat_reaction_state(account_name, chat_id, message_id, now)
+        logger.info(
+            "chat reaction set reason=pipeline2_user_message chat=%s msg_id=%s bot=%s emoji=%s",
+            chat_id,
+            message_id,
+            account_name,
+            emoji,
+        )
+    else:
+        logger.warning(
+            "chat reaction skipped reason=pipeline2_user_message chat=%s msg_id=%s bot=%s why=api_error",
+            chat_id,
+            message_id,
+            account_name,
+        )
+
+
 async def _try_set_reaction_on_news_post(
     config: Config,
     accounts: dict[str, AccountRuntime],
@@ -314,7 +438,7 @@ async def _try_set_reaction_on_news_post(
         )
     if msg_id is None:
         logger.info(
-            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=message_id_missing",
+            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=message_id_missing",
             chat_id,
             0,
         )
@@ -322,14 +446,14 @@ async def _try_set_reaction_on_news_post(
     today = now.strftime("%Y-%m-%d")
     if _REACTION_REACTED_TODAY.get((chat_id, msg_id)) == today:
         logger.info(
-            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=already_reacted_today",
+            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=already_reacted_today",
             chat_id,
             msg_id,
         )
         return
     if random.random() >= config.REACTION_PROBABILITY:
         logger.info(
-            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=probability",
+            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=probability",
             chat_id,
             msg_id,
         )
@@ -342,7 +466,7 @@ async def _try_set_reaction_on_news_post(
     )
     if not reaction_candidates:
         logger.info(
-            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s why=limit",
+            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=limit",
             chat_id,
             msg_id,
         )
@@ -353,13 +477,20 @@ async def _try_set_reaction_on_news_post(
     account = accounts.get(bot_row.account_name)
     if not account or not account.writer_client:
         logger.warning(
-            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s bot=%s why=no_permission",
+            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s bot=%s why=no_permission",
             chat_id,
             msg_id,
             bot_row.account_name,
         )
         return
     emoji, sensitive = _pick_reaction_emoji(news_text, emojis)
+    logger.info(
+        "reaction attempt reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s",
+        chat_id,
+        msg_id,
+        bot_row.account_name,
+        emoji,
+    )
     ok = await set_message_reaction(
         account.writer_client, chat_id, msg_id, emoji
     )
@@ -367,7 +498,7 @@ async def _try_set_reaction_on_news_post(
         _update_reaction_state(bot_row.account_name, chat_id, now)
         _REACTION_REACTED_TODAY[(chat_id, msg_id)] = today
         logger.info(
-            "reaction set reason=pipeline1_news chat=%s msg_id=%s bot=%s emoji=%s sensitive=%s",
+            "reaction set reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s sensitive=%s",
             chat_id,
             msg_id,
             bot_row.account_name,
@@ -376,7 +507,7 @@ async def _try_set_reaction_on_news_post(
         )
     else:
         logger.warning(
-            "reaction skipped reason=pipeline1_news chat=%s msg_id=%s bot=%s why=api_error",
+            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s bot=%s why=api_error",
             chat_id,
             msg_id,
             bot_row.account_name,
@@ -993,13 +1124,25 @@ async def _process_discussion_pipeline(
     delay_factor = max(0.5, min(1.5, delay_factor))
     for idx, reply_text in enumerate(replies, start=1):
         # Planned chain for a single question; still keep persona roles per order.
+        account_name = selected_bots[idx - 1].account_name
+        _, persona_meta = _build_persona_prompt_and_meta(session, account_name)
+        if persona_meta.get("gender") == "female":
+            before = reply_text
+            reply_text = fix_female_grammar_in_reply(reply_text)
+            if reply_text != before and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "female_grammar_fix applied account=%s before=%r after=%r",
+                    account_name,
+                    before,
+                    reply_text,
+                )
         base_delay = _reply_delay_minutes(idx)
         adjusted_delay = max(1, int(round(base_delay * delay_factor)))
         send_at = now + timedelta(minutes=adjusted_delay)
         create_discussion_reply(
             session,
             pipeline_id=pipeline.id,
-            account_name=selected_bots[idx - 1].account_name,
+            account_name=account_name,
             reply_text=reply_text,
             send_at=send_at,
             reply_to_message_id=None,
@@ -1400,7 +1543,12 @@ def _build_persona_prompt_and_meta(
     display_name = profile.get("display_name", account_name)
     gender = profile.get("gender", "male")
     if gender == "female":
-        grammar = "пиши согласна/не согласна, уверена/не уверена"
+        grammar = (
+            "пиши от первого лица в женском роде. "
+            "Всегда: согласна, не согласна, уверена, не уверена, готова, права. "
+            "Никогда: согласен, уверен, готов, прав. "
+            "Примеры: «Согласна…», «Не уверена…», «Мне кажется…»"
+        )
     else:
         grammar = "пиши согласен/не согласен, уверен/не уверен"
     instructions = [
@@ -2061,6 +2209,16 @@ async def _plan_user_reply_for_candidate(
             continue
         if not reply_text:
             continue
+        if persona_meta.get("gender") == "female":
+            before = reply_text
+            reply_text = fix_female_grammar_in_reply(reply_text)
+            if reply_text != before and logger.isEnabledFor(logging.DEBUG):
+                logger.debug(
+                    "female_grammar_fix applied account=%s before=%r after=%r",
+                    bot_weight.account_name,
+                    before,
+                    reply_text,
+                )
         send_at = first_send_at if idx == 1 else second_send_at
         create_discussion_reply(
             session,
@@ -2290,6 +2448,15 @@ async def _send_due_user_replies(
             category="pipeline2",
             state="sent",
             message=f"bot {reply.account_name} -> {getattr(sent, 'id', None)}",
+        )
+        await _try_set_reaction_on_chat_message(
+            config,
+            accounts,
+            reply.account_name,
+            reply.chat_id or settings.target_chat,
+            reply.reply_to_message_id,
+            "",  # message_text for sensitive check; empty is ok
+            now,
         )
 
 

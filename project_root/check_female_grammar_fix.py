@@ -1,0 +1,49 @@
+"""Self-check: female grammar fix (prefix, order, word boundaries).
+Запуск: python -m project_root.check_female_grammar_fix
+Не требует доступа к БД или Telegram."""
+from __future__ import annotations
+
+import sys
+
+from project_root.female_grammar_fix import fix_female_grammar_in_reply
+
+
+def main() -> None:
+    tests = [
+        ("Согласен.", "Согласна."),
+        ("Не согласен.", "Не согласна."),
+        ("Не согласен, потому что...", "Не согласна, потому что..."),
+        ("не   согласен, но...", "не согласна, но..."),
+        ("не   уверен что так", "не уверена что так"),
+        ("не\nуверен", "не уверена"),
+        ("Готов помочь", "Готова помочь"),
+        ("Готов обсудить.", "Готова обсудить."),
+        ("Прав, конечно", "Права, конечно"),
+        ("Я прав в этом.", "Я права в этом."),
+        ("Уверен, что нет.", "Уверена, что нет."),
+        ("справедливо", "справедливо"),
+        # "Он сказал: согласен" — короткий, попадает в первые 80 → меняется
+        ("Он сказал: согласен", "Он сказал: согласна"),
+        # Quote after prefix: "согласен" beyond 80 chars → без изменений (prefix-only)
+        (
+            "Хороший вопрос. " * 6 + "Он сказал: согласен",
+            "Хороший вопрос. " * 6 + "Он сказал: согласен",
+        ),
+        ("Согласен, но есть нюанс.", "Согласна, но есть нюанс."),
+        ("", ""),
+        ("   ", "   "),
+    ]
+    fail_count = 0
+    for inp, expected in tests:
+        out = fix_female_grammar_in_reply(inp)
+        if out != expected:
+            print(f"FAIL: {inp!r} -> {out!r} (expected {expected!r})")
+            fail_count += 1
+        else:
+            print(f"OK:   {inp[:50]!r}... -> {out[:50]!r}...")
+    print(f"\nTotal: {len(tests) - fail_count} OK, {fail_count} FAIL")
+    sys.exit(1 if fail_count > 0 else 0)
+
+
+if __name__ == "__main__":
+    main()

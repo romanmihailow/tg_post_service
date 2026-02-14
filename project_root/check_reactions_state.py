@@ -23,7 +23,16 @@ def main() -> None:
     print("  REACTION_EMOJIS list:", config.reaction_emojis_list())
     print("  Today (UTC):", today)
     print()
-    print("Date reset: _REACTION_TODAY and _REACTION_REACTED_TODAY are cleared when")
+    print("Pipeline 2 chat reactions — current config")
+    print("  CHAT_REACTIONS_ENABLED:", getattr(config, "CHAT_REACTIONS_ENABLED", False))
+    print("  CHAT_REACTION_PROBABILITY:", getattr(config, "CHAT_REACTION_PROBABILITY", 0.15))
+    print("  CHAT_REACTION_DAILY_LIMIT_PER_BOT:", getattr(config, "CHAT_REACTION_DAILY_LIMIT_PER_BOT", 20))
+    print("  CHAT_REACTION_COOLDOWN_MINUTES:", getattr(config, "CHAT_REACTION_COOLDOWN_MINUTES", 10))
+    print("  CHAT_REACTION_EMOJIS list:", config.chat_reaction_emojis_list())
+    print("  CHAT_REACTION_ON_USER_MESSAGE:", getattr(config, "CHAT_REACTION_ON_USER_MESSAGE", True))
+    print("  CHAT_REACTION_ON_BOT_MESSAGE:", getattr(config, "CHAT_REACTION_ON_BOT_MESSAGE", False))
+    print()
+    print("Date reset: channel and chat reaction daily structures are cleared when")
     print("the calendar date changes (on first reaction path use each day). No restart needed.")
 
 
