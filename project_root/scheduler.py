@@ -10,7 +10,7 @@ import random
 import re
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-from typing import List
+from typing import Any, List
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session
@@ -1169,9 +1169,13 @@ def _weighted_choice_with_map(
     return weights[-1]
 
 
-def _format_persona_for_prompt(session: Session, account_name: str) -> str:
+def _build_persona_prompt_and_meta(
+    session: Session, account_name: str
+) -> tuple[str, dict[str, Any]]:
+    """Строит человекочитаемый role_label и структурированные метаданные персоны.
+    Возвращает (role_label, persona_meta). Без META-строки в role_label."""
     persona = get_userbot_persona(session, account_name)
-    tone = (persona.persona_tone if persona and persona.persona_tone else "neutral")
+    tone = persona.persona_tone if persona and persona.persona_tone else "neutral"
     verbosity = (
         persona.persona_verbosity if persona and persona.persona_verbosity else "short"
     )
@@ -1188,6 +1192,14 @@ def _format_persona_for_prompt(session: Session, account_name: str) -> str:
     instructions = [
         f"Имя: {display_name}. Пол: {grammar}.",
     ]
+    if gender == "female":
+        instructions.append(
+            "Чаще формулируй через нюанс, уточнение или мягкую позицию."
+        )
+    else:
+        instructions.append(
+            "Формулировки могут быть чуть более прямыми и уверенными, без смягчающих оборотов."
+        )
     if tone == "analytical":
         instructions.append("тон: спокойный, взвешенный")
     elif tone == "emotional":
@@ -1200,15 +1212,35 @@ def _format_persona_for_prompt(session: Session, account_name: str) -> str:
         instructions.append("тон: нейтральный")
     if verbosity == "medium":
         instructions.append("длина: 1–2 предложения")
+    elif verbosity == "long":
+        instructions.append("длина: 2–3 предложения")
     else:
         instructions.append("длина: 1 короткое предложение")
     if style_hint:
         instructions.append(f"стиль: {style_hint}")
-    topics, _, _ = _load_persona_interest(session, account_name)
+    topics, topic_priority, offtopic_tolerance = _load_persona_interest(
+        session, account_name
+    )
     if topics:
         instructions.append("темы: " + ", ".join(topics))
     instructions.append("ограничения: без сленга, без эмодзи, без капса, без упоминания бота/ИИ")
-    return " | ".join(instructions)
+    role_label = " | ".join(instructions)
+    persona_meta: dict[str, Any] = {
+        "display_name": display_name,
+        "gender": gender,
+        "tone": tone,
+        "verbosity": verbosity,
+        "topics": topics,
+        "topic_priority": topic_priority,
+        "offtopic_tolerance": offtopic_tolerance,
+    }
+    return role_label, persona_meta
+
+
+def _format_persona_for_prompt(session: Session, account_name: str) -> str:
+    """Человекочитаемый role_label для Pipeline 1 и Pipeline 2 (без META)."""
+    role_label, _ = _build_persona_prompt_and_meta(session, account_name)
+    return role_label
 
 
 def _persona_role_rank(session: Session, account_name: str) -> int:
@@ -1786,14 +1818,22 @@ async def _plan_user_reply_for_candidate(
         if not account:
             continue
         try:
+            role_label, persona_meta = _build_persona_prompt_and_meta(
+                session, bot_weight.account_name
+            )
             reply_text, _, _, _ = await asyncio.to_thread(
                 account.openai_client.generate_user_reply,
                 source_text=candidate["text"],
                 context_messages=context_messages,
-                role_label=_format_persona_for_prompt(session, bot_weight.account_name),
+                role_label=role_label,
+                persona_meta=persona_meta,
                 pipeline_id=pipeline.id,
                 chat_id=candidate["chat_id"],
-                extra={"source": "pipeline2", "reply_to_message_id": candidate["message_id"]},
+                extra={
+                    "source": "pipeline2",
+                    "reply_to_message_id": candidate["message_id"],
+                    "account_name": bot_weight.account_name,
+                },
                 system_prompt_override=getattr(account, "system_prompt_chat", None),
             )
         except Exception:

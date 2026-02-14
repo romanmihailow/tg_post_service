@@ -169,6 +169,7 @@ class OpenAIClient:
         source_text: str,
         context_messages: list[str],
         role_label: str,
+        persona_meta: dict[str, Any] | None = None,
         pipeline_id: int | None = None,
         chat_id: str | None = None,
         extra: dict[str, Any] | None = None,
@@ -179,8 +180,16 @@ class OpenAIClient:
             f"- {text}" for text in context_messages if text.strip()
         )
 
+        if persona_meta is None:
+            logger.warning(
+                "generate_user_reply: persona_meta is None, using defaults (tone=neutral verbosity=short)"
+            )
+        meta = persona_meta or {}
+        tone = meta.get("tone", "neutral")
+        verbosity = meta.get("verbosity", "short")
+
         # Общие правила (всегда в промпте)
-        common_rules = (
+        common_rules_parts = [
             "Ты участник живого Telegram-чата. Пиши как живой человек, не как эксперт и не как статья.\n\n"
             "Обязательно:\n"
             "- Выбери одну фразу или деталь из сообщения пользователя и отвечай именно на неё; не пересказывай весь вопрос.\n"
@@ -192,7 +201,39 @@ class OpenAIClient:
             "- Без ссылок, без призывов подписаться, без «я бот».\n"
             "- Если уместно, оттолкнись от последнего сообщения в контексте: согласись, оспорь или уточни одной фразой.\n"
             "- Иногда допустимо мягко не согласиться с предыдущим сообщением, если это уместно.\n"
-        )
+            "- Не обязательно поддерживать общий тон беседы — допускается лёгкий контраст или альтернативная точка зрения.\n",
+        ]
+        if tone == "emotional":
+            common_rules_parts.append(
+                "- Допустима более резкая или эмоциональная формулировка, если это уместно.\n"
+            )
+        common_rules = "".join(common_rules_parts)
+
+        # Часть 1: микрослучайная длина по verbosity
+        r = random.random()
+        if verbosity == "short":
+            length_hint = "Длина: одно предложение." if r < 0.7 else "Длина: 1–2 предложения."
+        elif verbosity == "medium":
+            length_hint = "Длина: одно предложение." if r < 0.4 else "Длина: 1–2 предложения."
+        elif verbosity == "long":
+            if r < 0.15:
+                length_hint = "Длина: одно предложение."
+            elif r < 0.70:
+                length_hint = "Длина: 1–2 предложения."
+            else:
+                length_hint = "Длина: 2–3 предложения."
+        else:
+            length_hint = "Длина: одно предложение." if r < 0.7 else "Длина: 1–2 предложения."
+
+        # Часть 2: эмоциональный коэффициент (25% для emotional)
+        emotional_boost = ""
+        if tone == "emotional" and random.random() < 0.25:
+            emotional_boost = "\nМожно использовать более живую или резкую интонацию."
+
+        # Часть 3: микро-несогласие (20%)
+        contrast_hint = ""
+        if random.random() < 0.20:
+            contrast_hint = "\nМожно занять слегка отличающуюся позицию от предыдущего сообщения, если это логично."
 
         # Пресеты манеры ответа (веса: сумма 100; ультра-короткий 15%)
         presets = [
@@ -204,11 +245,27 @@ class OpenAIClient:
             "Формат: 1–2 предложения. Начни с мягкого несогласия или сомнения: «Не совсем согласен…», «Я бы поспорил…», «Не уверен, что всё так просто…», «Тут есть другой момент…» — затем одно короткое пояснение или один нюанс. Без агрессии, без морализаторства, без «Это может».",
         ]
         weights = [22, 20, 18, 10, 15, 15]  # 1 позиция 22%; 2 нюанс 20%; 3 пример 18%; 4 вопрос 10%; 5 ультра 15%; 6 мягк.несогл. 15%
-        preset = random.choices(presets, weights=weights, k=1)[0]
+        preset_idx = random.choices(range(len(presets)), weights=weights, k=1)[0]
+        preset = presets[preset_idx]
+        # Для ультра-короткого пресета (индекс 4) не добавляем length_hint — он уже задан
+        preset_block = f"Сейчас:\n{preset}\n"
+        if preset_idx != 4:
+            preset_block += f"\n{length_hint}\n"
+        preset_block += f"{emotional_boost}{contrast_hint}\n\n"
+
+        if logger.isEnabledFor(logging.DEBUG):
+            account_name = (extra or {}).get("account_name", "?")
+            logger.debug(
+                "user_reply persona: account=%s meta=%s preset_idx=%s length_hint=%s",
+                account_name,
+                {"tone": tone, "verbosity": verbosity, "gender": meta.get("gender", "?")},
+                preset_idx,
+                length_hint,
+            )
 
         prompt = (
             f"{common_rules}"
-            f"Сейчас:\n{preset}\n\n"
+            f"{preset_block}"
             f"Твоя роль в этом чате:\n{role_label}\n\n"
             "Последние сообщения чата:\n"
             f"{context_block}\n\n"
