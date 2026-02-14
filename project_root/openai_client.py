@@ -13,6 +13,11 @@ from openai import OpenAI
 
 logger = logging.getLogger(__name__)
 
+# Контракт persona_meta: допустимые значения (P1 устойчивость)
+VALID_TONES = {"neutral", "analytical", "emotional", "ironic", "skeptical"}
+VALID_VERBOSITY = {"short", "medium", "long"}
+VALID_GENDER = {"male", "female"}
+
 T = TypeVar("T")
 
 
@@ -174,8 +179,10 @@ class OpenAIClient:
         chat_id: str | None = None,
         extra: dict[str, Any] | None = None,
         system_prompt_override: str | None = None,
-    ) -> Tuple[str, int, int, int]:
-        """Generate a short reply to a user message (Pipeline 2 live replies)."""
+    ) -> Tuple[str, int, int, int, dict[str, Any]]:
+        """Generate a short reply to a user message (Pipeline 2 live replies).
+        Returns (text, in_tokens, out_tokens, total_tokens, gen_info).
+        gen_info: {preset_idx, length_hint} for observability."""
         context_block = "\n".join(
             f"- {text}" for text in context_messages if text.strip()
         )
@@ -185,8 +192,30 @@ class OpenAIClient:
                 "generate_user_reply: persona_meta is None, using defaults (tone=neutral verbosity=short)"
             )
         meta = persona_meta or {}
-        tone = meta.get("tone", "neutral")
-        verbosity = meta.get("verbosity", "short")
+
+        raw_tone = meta.get("tone", "neutral")
+        tone = raw_tone if raw_tone in VALID_TONES else "neutral"
+        if raw_tone != tone:
+            logger.warning(
+                "generate_user_reply: invalid tone=%r, using default neutral",
+                raw_tone,
+            )
+
+        raw_verbosity = meta.get("verbosity", "short")
+        verbosity = raw_verbosity if raw_verbosity in VALID_VERBOSITY else "short"
+        if raw_verbosity != verbosity:
+            logger.warning(
+                "generate_user_reply: invalid verbosity=%r, using default short",
+                raw_verbosity,
+            )
+
+        raw_gender = meta.get("gender", "male")
+        gender = raw_gender if raw_gender in VALID_GENDER else "male"
+        if raw_gender != gender:
+            logger.warning(
+                "generate_user_reply: invalid gender=%r, using default male",
+                raw_gender,
+            )
 
         # Общие правила (всегда в промпте)
         common_rules_parts = [
@@ -253,12 +282,18 @@ class OpenAIClient:
             preset_block += f"\n{length_hint}\n"
         preset_block += f"{emotional_boost}{contrast_hint}\n\n"
 
+        gen_info: dict[str, Any] = {
+            "preset_idx": preset_idx,
+            "length_hint": length_hint,
+        }
         if logger.isEnabledFor(logging.DEBUG):
             account_name = (extra or {}).get("account_name", "?")
             logger.debug(
-                "user_reply persona: account=%s meta=%s preset_idx=%s length_hint=%s",
+                "user_reply persona: account=%s tone=%s verbosity=%s gender=%s preset_idx=%s length_hint=%s",
                 account_name,
-                {"tone": tone, "verbosity": verbosity, "gender": meta.get("gender", "?")},
+                tone,
+                verbosity,
+                gender,
                 preset_idx,
                 length_hint,
             )
@@ -288,7 +323,7 @@ class OpenAIClient:
             total_tokens=total_tokens,
             extra=extra or {},
         )
-        return text.strip(), in_tokens, out_tokens, total_tokens
+        return text.strip(), in_tokens, out_tokens, total_tokens, gen_info
 
     def _responses_text(
         self, system_prompt: str, user_text: str

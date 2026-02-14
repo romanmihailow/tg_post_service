@@ -1821,7 +1821,7 @@ async def _plan_user_reply_for_candidate(
             role_label, persona_meta = _build_persona_prompt_and_meta(
                 session, bot_weight.account_name
             )
-            reply_text, _, _, _ = await asyncio.to_thread(
+            reply_text, _, _, _, gen_info = await asyncio.to_thread(
                 account.openai_client.generate_user_reply,
                 source_text=candidate["text"],
                 context_messages=context_messages,
@@ -1872,9 +1872,16 @@ async def _plan_user_reply_for_candidate(
             ),
         )
         chat_state.replies_today += 1
+        preset_str = gen_info.get("preset_idx", "n/a") if gen_info else "n/a"
+        length_str = gen_info.get("length_hint", "n/a") if gen_info else "n/a"
         logger.info(
-            "user reply scheduled: bot %s at %s",
+            "user_reply scheduled bot=%s tone=%s verbosity=%s gender=%s preset=%s length=%s at=%s",
             bot_weight.account_name,
+            persona_meta.get("tone", "n/a"),
+            persona_meta.get("verbosity", "n/a"),
+            persona_meta.get("gender", "n/a"),
+            preset_str,
+            length_str,
             send_at.isoformat(),
         )
     return created_any, last_used
