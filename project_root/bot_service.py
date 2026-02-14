@@ -61,7 +61,6 @@ logger = logging.getLogger(__name__)
 AUDIT_LOG_PATH = "logs/audit.log"
 
 
-
 def _is_admin(user_id: int | None, admins: Iterable[int]) -> bool:
     return user_id is not None and user_id in set(admins)
 ROLE_PERMISSIONS = {
