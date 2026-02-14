@@ -66,6 +66,19 @@ _DISCUSSION_RECENT_TOPICS_LIMIT = 3
 # Обрабатывать не больше N отложенных ответов за цикл, чтобы не блокировать скан чата
 _MAX_DUE_USER_REPLIES_PER_CYCLE = 5
 
+# Имя и пол для role_label (Pipeline 2 gender-формы: согласна/согласен). Без миграции БД.
+PERSONA_PROFILE_OVERRIDES: dict[str, dict[str, str]] = {
+    "t9870202433": {"display_name": "Мария Кузнецова", "gender": "female"},
+    "t9876002641": {"display_name": "Виктория Сергеевна", "gender": "female"},
+    "t9174800805": {"display_name": "Екатерина Волкова", "gender": "female"},
+    "t9174801182": {"display_name": "Анна Романова", "gender": "female"},
+    "acc1": {"display_name": "Александр Грушевский", "gender": "male"},
+    "t9876001411": {"display_name": "Олег Синица", "gender": "male"},
+    "t9174803110": {"display_name": "Дмитрий Орлов", "gender": "male"},
+    "t9014429801": {"display_name": "Илья Морозов", "gender": "male"},
+    "t9083516765": {"display_name": "Николай Лебедев", "gender": "male"},
+}
+
 
 def _update_pipeline_status(
     pipeline: Pipeline,
@@ -1165,33 +1178,36 @@ def _format_persona_for_prompt(session: Session, account_name: str) -> str:
     style_hint = (
         persona.persona_style_hint if persona and persona.persona_style_hint else None
     )
-    instructions = [f"userbot {account_name}"]
+    profile = PERSONA_PROFILE_OVERRIDES.get(account_name, {})
+    display_name = profile.get("display_name", account_name)
+    gender = profile.get("gender", "male")
+    if gender == "female":
+        grammar = "пиши согласна/не согласна, уверена/не уверена"
+    else:
+        grammar = "пиши согласен/не согласен, уверен/не уверен"
+    instructions = [
+        f"Имя: {display_name}. Пол: {grammar}.",
+    ]
     if tone == "analytical":
-        instructions.append("tone: спокойный, взвешенный, без эмоций")
+        instructions.append("тон: спокойный, взвешенный")
     elif tone == "emotional":
-        instructions.append("tone: мягко эмоциональный, без сленга и восклицаний")
+        instructions.append("тон: мягко эмоциональный")
     elif tone == "ironic":
-        instructions.append("tone: легкая ирония без сарказма")
+        instructions.append("тон: легкая ирония без сарказма")
     elif tone == "skeptical":
-        instructions.append("tone: умеренный скепсис без агрессии")
+        instructions.append("тон: умеренный скепсис без агрессии")
     else:
-        instructions.append("tone: нейтральный")
+        instructions.append("тон: нейтральный")
     if verbosity == "medium":
-        instructions.append("verbosity: 1-2 предложения без воды")
+        instructions.append("длина: 1–2 предложения")
     else:
-        instructions.append("verbosity: 1 короткое предложение")
-    instructions.append(
-        "ограничения: без сленга, без эмодзи, без капса, без упоминания бота/ИИ"
-    )
+        instructions.append("длина: 1 короткое предложение")
     if style_hint:
-        instructions.append(f"style_hint: {style_hint}")
+        instructions.append(f"стиль: {style_hint}")
     topics, _, _ = _load_persona_interest(session, account_name)
     if topics:
-        instructions.append(
-            "interests: "
-            + ", ".join(topics)
-            + " (мягкое предпочтение, без жесткой привязки)"
-        )
+        instructions.append("темы: " + ", ".join(topics))
+    instructions.append("ограничения: без сленга, без эмодзи, без капса, без упоминания бота/ИИ")
     return " | ".join(instructions)
 
 
@@ -1517,8 +1533,9 @@ async def _process_live_replies_pipeline(
         message="processing candidates",
     )
     replies_created = 0
+    last_selected_bot_account: str | None = None
     for candidate in candidates:
-        created = await _plan_user_reply_for_candidate(
+        created, last_used = await _plan_user_reply_for_candidate(
             config,
             accounts,
             primary_account,
@@ -1527,9 +1544,12 @@ async def _process_live_replies_pipeline(
             settings,
             chat_state,
             candidate,
+            last_selected_bot_account=last_selected_bot_account,
         )
         if created:
             replies_created += 1
+        if last_used:
+            last_selected_bot_account = last_used
     if max_id_seen is not None and replies_created > 0:
         chat_state.last_seen_message_id = max_id_seen
     elif replies_created == 0 and candidates:
@@ -1641,7 +1661,9 @@ async def _plan_user_reply_for_candidate(
     settings: DiscussionSettings,
     chat_state: ChatState,
     candidate: dict,
-) -> bool:
+    *,
+    last_selected_bot_account: str | None = None,
+) -> tuple[bool, str | None]:
     now = datetime.now(timezone.utc)
     _update_pipeline_status(
         pipeline,
@@ -1666,7 +1688,7 @@ async def _plan_user_reply_for_candidate(
             state="skipped",
             message=f"message {candidate.get('message_id')}: global limit",
         )
-        return False
+        return False, None
     base_prob = random.uniform(0.4, 0.6)
     boosted = candidate["is_reply_to_bot"] or "?" in candidate["text"]
     decision_prob = 0.8 if boosted else base_prob
@@ -1679,7 +1701,7 @@ async def _plan_user_reply_for_candidate(
             state="skipped",
             message=f"message {candidate.get('message_id')}: probability",
         )
-        return False
+        return False, None
     if settings.user_reply_max_age_minutes > 0:
         candidate_time = candidate["created_at"]
         if candidate_time.tzinfo is None:
@@ -1693,7 +1715,7 @@ async def _plan_user_reply_for_candidate(
                 state="skipped",
                 message=f"message {candidate.get('message_id')}: too old",
             )
-            return False
+            return False, None
     effective_inactivity = (
         _scale_minutes(settings.inactivity_pause_minutes, reply_level, min_value=0)
         if settings.inactivity_pause_minutes > 0
@@ -1712,7 +1734,7 @@ async def _plan_user_reply_for_candidate(
                 state="skipped",
                 message=f"message {candidate.get('message_id')}: inactive chat",
             )
-            return False
+            return False, None
     replies_count = random.choices([1, 2], weights=[80, 20])[0]
     available_weights = _ensure_discussion_weights(
         session, pipeline.id, accounts, exclude_account=primary_account.name
@@ -1726,7 +1748,10 @@ async def _plan_user_reply_for_candidate(
             state="skipped",
             message=f"message {candidate.get('message_id')}: no available userbots",
         )
-        return False
+        return False, None
+    # Anti-repeat: не выбирать того же бота, который отвечал последним в этом скане
+    if last_selected_bot_account and len(available) > 1:
+        available = [a for a in available if a.account_name != last_selected_bot_account]
     try:
         message_topics = extract_topics_for_text(candidate["text"])
         effective_weights = _build_effective_weights(
@@ -1755,6 +1780,7 @@ async def _plan_user_reply_for_candidate(
     first_send_at = base_time + timedelta(minutes=random.randint(2, 10))
     second_send_at = first_send_at + timedelta(minutes=random.randint(3, 15))
     created_any = False
+    last_used: str | None = None
     for idx, bot_weight in enumerate(selected_bots, start=1):
         account = accounts.get(bot_weight.account_name)
         if not account:
@@ -1794,6 +1820,7 @@ async def _plan_user_reply_for_candidate(
             source_message_at=base_time,
         )
         created_any = True
+        last_used = bot_weight.account_name
         _update_pipeline_status(
             pipeline,
             category="pipeline2",
@@ -1810,7 +1837,7 @@ async def _plan_user_reply_for_candidate(
             bot_weight.account_name,
             send_at.isoformat(),
         )
-    return created_any
+    return created_any, last_used
 
 
 def _select_user_reply_bots(
