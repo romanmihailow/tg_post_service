@@ -101,6 +101,8 @@ class PostHistory(Base):
     pipeline_id: Mapped[int] = mapped_column(ForeignKey("pipelines.id"), nullable=False)
     text: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    destination_channel: Mapped[Optional[str]] = mapped_column(String, nullable=True)
+    channel_message_id: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
 
     pipeline: Mapped["Pipeline"] = relationship("Pipeline")
 

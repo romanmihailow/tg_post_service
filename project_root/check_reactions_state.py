@@ -32,6 +32,12 @@ def main() -> None:
     print("  CHAT_REACTION_ON_USER_MESSAGE:", getattr(config, "CHAT_REACTION_ON_USER_MESSAGE", True))
     print("  CHAT_REACTION_ON_BOT_MESSAGE:", getattr(config, "CHAT_REACTION_ON_BOT_MESSAGE", False))
     print()
+    print("Admin reactions (channel post when P1 publishes question) — current config")
+    print("  ADMIN_REACTIONS_ENABLED:", getattr(config, "ADMIN_REACTIONS_ENABLED", False))
+    print("  ADMIN_REACTION_ACCOUNT_NAME:", repr(getattr(config, "ADMIN_REACTION_ACCOUNT_NAME", None)))
+    print("  ADMIN_REACTION_EMOJI:", getattr(config, "ADMIN_REACTION_EMOJI", "👀"))
+    print("  ADMIN_REACTION_FALLBACK_EMOJI:", getattr(config, "ADMIN_REACTION_FALLBACK_EMOJI", "👍"))
+    print()
     print("Date reset: channel and chat reaction daily structures are cleared when")
     print("the calendar date changes (on first reaction path use each day). No restart needed.")
 

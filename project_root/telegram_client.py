@@ -212,10 +212,10 @@ async def send_text(
     flood_wait_antiblock: bool = True,
     flood_wait_max_seconds: int = 300,
     flood_wait_notify_after_seconds: int | None = None,
-) -> None:
-    """Send a text message to the destination channel."""
+) -> Message:
+    """Send a text message to the destination channel. Returns the sent Message."""
     await _sleep_if_needed(request_delay_seconds, random_jitter_seconds)
-    await _send_with_flood_wait(
+    return await _send_with_flood_wait(
         client,
         lambda: client.send_message(dest_channel, text),
         flood_wait_antiblock,
@@ -256,12 +256,12 @@ async def send_image_with_caption(
     flood_wait_antiblock: bool = True,
     flood_wait_max_seconds: int = 300,
     flood_wait_notify_after_seconds: int | None = None,
-) -> None:
-    """Send an image with caption to the destination channel."""
+) -> Message:
+    """Send an image with caption to the destination channel. Returns the sent Message."""
     await _sleep_if_needed(request_delay_seconds, random_jitter_seconds)
     buffer = io.BytesIO(image_bytes)
     buffer.name = "image.png"
-    await _send_with_flood_wait(
+    return await _send_with_flood_wait(
         client,
         lambda: client.send_file(dest_channel, file=buffer, caption=caption),
         flood_wait_antiblock,
@@ -281,23 +281,22 @@ async def send_media_from_message(
     flood_wait_antiblock: bool = True,
     flood_wait_max_seconds: int = 300,
     flood_wait_notify_after_seconds: int | None = None,
-) -> None:
-    """Send media from an existing message with a caption."""
+) -> Message:
+    """Send media from an existing message with a caption. Returns the sent Message."""
     await _sleep_if_needed(request_delay_seconds, random_jitter_seconds)
     album_messages = await _collect_album_messages(reader_client, message)
     if len(album_messages) > 1:
         files = [item.media for item in album_messages if item.media]
         if not files:
-            return
-        await _send_with_flood_wait(
+            raise ValueError("No media in album")
+        return await _send_with_flood_wait(
             writer_client,
             lambda: writer_client.send_file(dest_channel, file=files, caption=caption),
             flood_wait_antiblock,
             flood_wait_max_seconds,
             flood_wait_notify_after_seconds,
         )
-        return
-    await _send_with_flood_wait(
+    return await _send_with_flood_wait(
         writer_client,
         lambda: writer_client.send_file(dest_channel, file=message.media, caption=caption),
         flood_wait_antiblock,

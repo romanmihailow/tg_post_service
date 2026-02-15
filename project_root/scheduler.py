@@ -517,6 +517,112 @@ async def _try_set_reaction_on_news_post(
         )
 
 
+async def _try_set_admin_reaction_on_source_post(
+    config: Config,
+    accounts: dict[str, AccountRuntime],
+    channel: str,
+    message_id: int,
+    reason: str,
+    now: datetime,
+) -> None:
+    """Admin account puts reaction (e.g. 👀) on channel post when Pipeline 1 publishes question.
+    Uses channel+message_id directly (from source_pipeline.destination_channel and state.last_source_post_id)."""
+    if not getattr(config, "ADMIN_REACTIONS_ENABLED", False):
+        return
+    if not channel or not message_id:
+        logger.info(
+            "admin_reaction skipped reason=%s why=channel_message_id_missing channel=%s msg_id=%s",
+            reason,
+            channel or "(empty)",
+            message_id,
+        )
+        return
+    account_name = getattr(config, "ADMIN_REACTION_ACCOUNT_NAME", None) or ""
+    if not account_name.strip():
+        logger.info("admin_reaction skipped reason=%s why=admin_account_missing", reason)
+        return
+    admin_account = accounts.get(account_name.strip())
+    if not admin_account or not admin_account.writer_client:
+        logger.warning(
+            "admin_reaction skipped reason=%s why=admin_no_client account=%s",
+            reason,
+            account_name,
+        )
+        return
+    target_emoji = getattr(config, "ADMIN_REACTION_EMOJI", "👀") or "👀"
+    fallback_emoji = getattr(config, "ADMIN_REACTION_FALLBACK_EMOJI", "👍") or "👍"
+    skip_if_unavailable = getattr(config, "ADMIN_REACTION_SKIP_IF_UNAVAILABLE", False)
+    allowed = await get_available_reaction_emojis(admin_account.writer_client, channel)
+    allowed_set = set(allowed) if allowed else set()
+    emoji: str | None = None
+    if allowed:
+        if target_emoji in allowed_set:
+            emoji = target_emoji
+        elif not skip_if_unavailable and fallback_emoji in allowed_set:
+            emoji = fallback_emoji
+        else:
+            logger.info(
+                "admin_reaction skipped reason=%s channel=%s msg_id=%s why=emoji_not_allowed target=%s allowed_count=%s",
+                reason,
+                channel,
+                message_id,
+                target_emoji,
+                len(allowed),
+            )
+            return
+    else:
+        if skip_if_unavailable:
+            logger.info(
+                "admin_reaction skipped reason=%s channel=%s msg_id=%s why=reactions_not_allowed",
+                reason,
+                channel,
+                message_id,
+            )
+            return
+        emoji = fallback_emoji
+    if not emoji:
+        return
+    logger.info(
+        "admin_reaction attempt reason=%s channel=%s msg_id=%s emoji=%s allowed_count=%s",
+        reason,
+        channel,
+        message_id,
+        emoji,
+        len(allowed) if allowed else 0,
+    )
+    try:
+        ok = await set_message_reaction(
+            admin_account.writer_client, channel, message_id, emoji
+        )
+        if ok:
+            logger.info(
+                "admin_reaction set reason=%s channel=%s msg_id=%s emoji=%s",
+                reason,
+                channel,
+                message_id,
+                emoji,
+            )
+        else:
+            logger.warning(
+                "admin_reaction failed reason=%s channel=%s msg_id=%s emoji=%s err_type=api_error err=set_message_reaction_returned_false",
+                reason,
+                channel,
+                message_id,
+                emoji,
+            )
+    except Exception as e:
+        err_type = "flood_wait" if "FloodWait" in type(e).__name__ else "api_error"
+        logger.warning(
+            "admin_reaction failed reason=%s channel=%s msg_id=%s emoji=%s err_type=%s err=%s",
+            reason,
+            channel,
+            message_id,
+            emoji,
+            err_type,
+            e,
+        )
+
+
 def _load_recent_topics(state: DiscussionState) -> list[str]:
     raw = (state.recent_topics_json or "").strip()
     if not raw:
@@ -773,7 +879,7 @@ async def _process_pipeline_once(
         and next_post_counter % pipeline.blackbox_every_n == 0
     )
     try:
-        await _post_message(
+        sent_msg = await _post_message(
             config,
             account,
             message,
@@ -801,8 +907,23 @@ async def _process_pipeline_once(
         return False
 
     source.last_message_id = message.id
+    channel_message_id = getattr(sent_msg, "id", None) if sent_msg else None
+    destination_channel = pipeline.destination_channel
+    if channel_message_id is None and original_text:
+        logger.warning(
+            "post_history channel_message_id missing pipeline=%s destination=%s (sent_msg not available)",
+            pipeline.name,
+            destination_channel,
+        )
     if original_text and _should_store_post_history(session, pipeline, config):
-        _store_recent_post(session, pipeline.id, original_text, config.DEDUP_WINDOW_SIZE)
+        _store_recent_post(
+            session,
+            pipeline.id,
+            original_text,
+            config.DEDUP_WINDOW_SIZE,
+            destination_channel=destination_channel,
+            channel_message_id=channel_message_id,
+        )
     state.current_source_index = (index + 1) % len(sources)
     state.total_posts = next_post_counter
     return True
@@ -1162,6 +1283,14 @@ async def _process_discussion_pipeline(
         now=now,
         selected_post_message_id=selected_item.message_id,
         selected_post_chat_id=source_channel,
+    )
+    await _try_set_admin_reaction_on_source_post(
+        config=config,
+        accounts=accounts,
+        channel=source_channel,
+        message_id=state.last_source_post_id,
+        reason="pipeline1_question_to_chat",
+        now=now,
     )
     text_cost = _estimate_text_cost(
         in_t + in_t2,
@@ -2551,16 +2680,18 @@ async def _post_message(
     destination_channel: str,
     posting_mode: str,
     flood_wait_notify_after_seconds: int | None = None,
-) -> None:
+):
+    """Post message to destination channel. Returns the sent Message or None if no single message was sent."""
     reader_client = account.reader_client
     writer_client = account.writer_client
     openai_client = account.openai_client
     footer_handle = destination_channel
     original_text = (message.message or "").strip()
+    sent_msg = None
     if posting_mode == "PLAGIAT":
         final_text = _append_footer(original_text, footer_handle)
         if message.media:
-            await send_media_from_message(
+            sent_msg = await send_media_from_message(
                 reader_client,
                 writer_client,
                 destination_channel,
@@ -2573,7 +2704,7 @@ async def _post_message(
                 flood_wait_notify_after_seconds=flood_wait_notify_after_seconds,
             )
         else:
-            await send_text(
+            sent_msg = await send_text(
                 writer_client,
                 destination_channel,
                 final_text,
@@ -2595,13 +2726,13 @@ async def _post_message(
             0,
             0.0,
         )
-        return
+        return sent_msg
 
     if posting_mode == "TEXT_MEDIA":
         if not original_text:
             final_text = _append_footer("", footer_handle)
             if message.media:
-                await send_media_from_message(
+                sent_msg = await send_media_from_message(
                     reader_client,
                     writer_client,
                     destination_channel,
@@ -2614,7 +2745,7 @@ async def _post_message(
                     flood_wait_notify_after_seconds=flood_wait_notify_after_seconds,
                 )
             else:
-                await send_text(
+                sent_msg = await send_text(
                     writer_client,
                     destination_channel,
                     final_text,
@@ -2636,7 +2767,7 @@ async def _post_message(
                 0,
                 0.0,
             )
-            return
+            return sent_msg
         text = original_text
         if apply_blackbox:
             text = f"[BLACKBOX]\n{text}"
@@ -2653,7 +2784,7 @@ async def _post_message(
             )
         final_text = _append_footer(paraphrased, footer_handle)
         if message.media:
-            await send_media_from_message(
+            sent_msg = await send_media_from_message(
                 reader_client,
                 writer_client,
                 destination_channel,
@@ -2666,7 +2797,7 @@ async def _post_message(
                 flood_wait_notify_after_seconds=flood_wait_notify_after_seconds,
             )
         else:
-            await send_text(
+            sent_msg = await send_text(
                 writer_client,
                 destination_channel,
                 final_text,
@@ -2694,7 +2825,7 @@ async def _post_message(
             0,
             0.0,
         )
-        return
+        return sent_msg
 
     text = original_text
     if apply_blackbox:
@@ -2722,7 +2853,7 @@ async def _post_message(
     image_cost = 0.0
 
     if posting_mode == "TEXT":
-        await send_text(
+        sent_msg = await send_text(
             writer_client,
             destination_channel,
             paraphrased,
@@ -2744,11 +2875,11 @@ async def _post_message(
             image_count,
             image_cost,
         )
-        return
+        return sent_msg
 
     if not message.photo:
         # In TEXT_IMAGE mode we fall back to text-only if the source has no image.
-        await send_text(
+        sent_msg = await send_text(
             writer_client,
             destination_channel,
             paraphrased,
@@ -2770,7 +2901,7 @@ async def _post_message(
             image_count,
             image_cost,
         )
-        return
+        return sent_msg
 
     image_bytes = await download_message_photo(reader_client, message)
     description = await asyncio.to_thread(
@@ -2781,7 +2912,7 @@ async def _post_message(
     )
     image_count = 1
     image_cost = account.openai_settings.image_price_1024_usd
-    await send_image_with_caption(
+    sent_msg = await send_image_with_caption(
         writer_client,
         destination_channel,
         generated_bytes,
@@ -2804,6 +2935,7 @@ async def _post_message(
         image_count,
         image_cost,
     )
+    return sent_msg
 
 
 def _load_channels(session: Session) -> List[PipelineSource]:
@@ -3125,13 +3257,21 @@ def _is_similar_news_bm25(
 
 
 def _store_recent_post(
-    session: Session, pipeline_id: int, text: str, window_size: int
+    session: Session,
+    pipeline_id: int,
+    text: str,
+    window_size: int,
+    *,
+    destination_channel: str | None = None,
+    channel_message_id: int | None = None,
 ) -> None:
     session.add(
         PostHistory(
             pipeline_id=pipeline_id,
             text=text,
             created_at=datetime.utcnow(),
+            destination_channel=destination_channel,
+            channel_message_id=channel_message_id,
         )
     )
     session.flush()

@@ -304,6 +304,13 @@ class Config(BaseSettings):
     CHAT_REACTIONS_MODEL_DRIVEN: bool = Field(default=False)
     CHAT_REACTIONS_MODEL_NULL_RATE: float = Field(default=0.65)  # target share of null (no reaction)
 
+    # Admin reaction on channel post when Pipeline 1 publishes question to chat
+    ADMIN_REACTIONS_ENABLED: bool = Field(default=False)
+    ADMIN_REACTION_ACCOUNT_NAME: Optional[str] = Field(default=None)
+    ADMIN_REACTION_EMOJI: str = Field(default="👀")
+    ADMIN_REACTION_FALLBACK_EMOJI: str = Field(default="👍")
+    ADMIN_REACTION_SKIP_IF_UNAVAILABLE: bool = Field(default=False)
+
     @field_validator("REACTION_PROBABILITY", mode="before")
     @classmethod
     def validate_reaction_probability(cls, value: object) -> float:

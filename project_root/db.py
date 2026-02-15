@@ -59,6 +59,7 @@ def init_db(config: Config) -> None:
     _ensure_discussion_state_schema()
     _ensure_discussion_replies_schema()
     _ensure_userbot_persona_schema()
+    _ensure_post_history_schema()
     with SessionLocal() as session:
         _ensure_pipelines(session, config.pipelines)
         _ensure_pipeline_states(session)
@@ -248,6 +249,22 @@ def _ensure_discussion_replies_schema() -> None:
         if "source_message_at" not in columns:
             connection.execute(
                 text("ALTER TABLE discussion_replies ADD COLUMN source_message_at DATETIME")
+            )
+        connection.commit()
+
+
+def _ensure_post_history_schema() -> None:
+    """Add destination_channel and channel_message_id to post_history if missing."""
+    with ENGINE.connect() as connection:
+        result = connection.execute(text("PRAGMA table_info(post_history)"))
+        columns = {row[1] for row in result.fetchall()}
+        if "destination_channel" not in columns:
+            connection.execute(
+                text("ALTER TABLE post_history ADD COLUMN destination_channel TEXT")
+            )
+        if "channel_message_id" not in columns:
+            connection.execute(
+                text("ALTER TABLE post_history ADD COLUMN channel_message_id INTEGER")
             )
         connection.commit()
 
