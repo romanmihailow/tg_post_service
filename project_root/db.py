@@ -706,6 +706,30 @@ def create_pipeline(session: Session, config: PipelineConfig) -> Pipeline:
     session.flush()
     for channel in config.sources:
         session.add(PipelineSource(pipeline_id=pipeline.id, source_channel=channel))
+    if config.pipeline_type == "DISCUSSION":
+        upsert_discussion_settings(
+            session,
+            pipeline_id=pipeline.id,
+            target_chat=config.discussion_target_chat or config.destination,
+            source_pipeline_name=config.discussion_source_pipeline or config.name,
+            k_min=config.discussion_k_min,
+            k_max=config.discussion_k_max,
+            reply_to_reply_probability=config.discussion_reply_to_reply_probability,
+            activity_windows_weekdays_json=config.discussion_activity_windows_weekdays_json,
+            activity_windows_weekends_json=config.discussion_activity_windows_weekends_json,
+            activity_timezone=config.discussion_activity_timezone,
+            min_interval_minutes=config.discussion_min_interval_minutes,
+            max_interval_minutes=config.discussion_max_interval_minutes,
+            inactivity_pause_minutes=config.discussion_inactivity_pause_minutes,
+            max_auto_replies_per_chat_per_day=(
+                config.discussion_max_auto_replies_per_chat_per_day
+            ),
+            user_reply_max_age_minutes=(
+                120
+                if config.name == "discuss_news_blackbox"
+                else config.discussion_user_reply_max_age_minutes
+            ),
+        )
     return pipeline
 
 
