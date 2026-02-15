@@ -138,8 +138,8 @@ class PipelineConfig(BaseModel):
     blackbox_every_n: int = 0
     discussion_target_chat: Optional[str] = Field(default=None)
     discussion_source_pipeline: Optional[str] = Field(default=None)
-    discussion_k_min: int = 5
-    discussion_k_max: int = 8
+    discussion_k_min: int = 15
+    discussion_k_max: int = 20
     discussion_reply_to_reply_probability: int = 15
     discussion_activity_windows_weekdays_json: Optional[str] = Field(default=None)
     discussion_activity_windows_weekends_json: Optional[str] = Field(default=None)

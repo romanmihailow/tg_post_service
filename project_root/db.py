@@ -189,6 +189,13 @@ def _ensure_discussion_settings_schema() -> None:
                     "ALTER TABLE discussion_settings ADD COLUMN user_reply_max_age_minutes INTEGER DEFAULT 30"
                 )
             )
+        # Migration: increase discussion post window from 5-8 to 15-20
+        connection.execute(
+            text(
+                "UPDATE discussion_settings SET k_min=15, k_max=20 "
+                "WHERE k_min=5 AND k_max=8"
+            )
+        )
         connection.commit()
 
 

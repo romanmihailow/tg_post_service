@@ -1259,8 +1259,8 @@ async def _process_discussion_pipeline(
             item for item in candidates
             if not recent_topics.intersection({t.lower() for t in extract_topics_for_text(item.text)})
         ]
+        candidates = filtered_by_topics
         if filtered_by_topics:
-            candidates = filtered_by_topics
             logger.info("discussion_filter pipeline=%s reason=recent_topics before=%s after=%s", pipeline.name, before, len(candidates))
 
     fp_ring_size = getattr(config, "DISCUSSION_FINGERPRINT_RING_SIZE", 10)
@@ -1268,25 +1268,38 @@ async def _process_discussion_pipeline(
     if seen_fps and len(candidates) > 1:
         before = len(candidates)
         filtered_fp = [c for c in candidates if topic_fingerprint(c.text) not in seen_fps]
+        candidates = filtered_fp
         if filtered_fp:
-            candidates = filtered_fp
             logger.info("discussion_filter pipeline=%s reason=fingerprint_seen before=%s after=%s", pipeline.name, before, len(candidates))
         else:
-            logger.info("discussion_filter_fallback pipeline=%s reason=fingerprint kept=%s", pipeline.name, before)
+            logger.info("discussion_filter pipeline=%s reason=fingerprint_seen before=%s after=0 (skip repeat)", pipeline.name, before)
 
     bm25_window = getattr(config, "DEDUP_WINDOW_SIZE", 30)
     bm25_threshold = getattr(config, "DEDUP_BM25_THRESHOLD", 7.0)
     if bm25_window > 0 and len(candidates) > 1:
         before = len(candidates)
-        filtered_bm25 = []
-        for c in candidates:
-            if not _is_similar_news_bm25(session, source_pipeline.id, c.text, bm25_window, bm25_threshold):
-                filtered_bm25.append(c)
+        filtered_bm25 = [
+            c for c in candidates
+            if not _is_similar_news_bm25(session, source_pipeline.id, c.text, bm25_window, bm25_threshold)
+        ]
+        candidates = filtered_bm25
         if filtered_bm25:
-            candidates = filtered_bm25
             logger.info("discussion_filter pipeline=%s reason=bm25_similar before=%s after=%s", pipeline.name, before, len(candidates))
         else:
-            logger.info("discussion_filter_fallback pipeline=%s reason=bm25 kept=%s", pipeline.name, before)
+            logger.info("discussion_filter pipeline=%s reason=bm25_similar before=%s after=0 (skip repeat)", pipeline.name, before)
+
+    if not candidates:
+        logger.info(
+            "discussion skipped: all candidates filtered (already discussed) (pipeline=%s)",
+            pipeline.name,
+        )
+        _update_pipeline_status(
+            pipeline,
+            category="pipeline1",
+            state="skipped",
+            message="all candidates already discussed",
+        )
+        return sent_any
 
     _update_pipeline_status(
         pipeline,

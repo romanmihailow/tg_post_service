@@ -145,8 +145,8 @@ class DiscussionSettings(Base):
     )
     target_chat: Mapped[str] = mapped_column(String, nullable=False)
     source_pipeline_name: Mapped[str] = mapped_column(String, nullable=False)
-    k_min: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
-    k_max: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    k_min: Mapped[int] = mapped_column(Integer, nullable=False, default=15)
+    k_max: Mapped[int] = mapped_column(Integer, nullable=False, default=20)
     reply_to_reply_probability: Mapped[int] = mapped_column(
         Integer, nullable=False, default=15
     )
