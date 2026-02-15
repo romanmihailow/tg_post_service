@@ -49,6 +49,7 @@ from project_root.db import (
     get_userbot_persona,
     mark_invite_code_used,
     mark_invite_used,
+    update_discussion_inactivity_pause,
     update_discussion_intervals,
     update_pipeline_destination,
     update_pipeline_interval,
@@ -276,7 +277,7 @@ def _pipeline_menu_keyboard(
         rows.append(["Добавить источник", "Удалить источник"])
         rows.append(["Режим", "Интервал"])
         if is_discussion:
-            rows.append(["Интервал обсуждений"])
+            rows.append(["Интервал обсуждений", "Пауза при тишине"])
         rows.append(["Вкл/выкл"])
     if can_delete:
         rows.append(["Удалить пайплайн"])
@@ -1438,6 +1439,34 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "Введите min max через пробел (например: 5 10):"
             )
             return
+        if text == "Пауза при тишине":
+            if not _has_permission(config, user_id, "edit"):
+                await update.message.reply_text("Недостаточно прав.")
+                return
+            with get_session() as session:
+                pipeline_obj = get_pipeline_by_name(session, pipeline_name)
+                if not pipeline_obj or pipeline_obj.pipeline_type != "DISCUSSION":
+                    await update.message.reply_text(
+                        "Доступно только для пайплайнов типа Обсуждение."
+                    )
+                    return
+                settings = get_discussion_settings(session, pipeline_obj.id)
+                if not settings:
+                    await update.message.reply_text(
+                        "Настройки обсуждения не найдены."
+                    )
+                    return
+            label = "0 (выкл)" if settings.inactivity_pause_minutes == 0 else f"{settings.inactivity_pause_minutes} мин"
+            await update.message.reply_text(
+                f"⚙️ Пауза при тишине в чате\n"
+                f"Текущая: {label}\n"
+                f"Если > 0 — не постить, если в чате давно не было сообщений людей."
+            )
+            context.user_data["awaiting"] = {"type": "pipeline_discussion_inactivity"}
+            await update.message.reply_text(
+                "Введите 0 (выкл) или минуты (например: 60):"
+            )
+            return
         if text == "Режим":
             if not _has_permission(config, user_id, "edit"):
                 await update.message.reply_text("Недостаточно прав.")
@@ -1947,6 +1976,9 @@ async def _handle_awaiting(
     if awaiting.get("type") == "pipeline_discussion_interval":
         await _update_discussion_intervals(update, context, text)
         return True
+    if awaiting.get("type") == "pipeline_discussion_inactivity":
+        await _update_discussion_inactivity_pause(update, context, text)
+        return True
     if awaiting.get("type") == "pipeline_delete":
         await _update_pipeline_delete(update, context, text)
         return True
@@ -2389,6 +2421,43 @@ async def _update_discussion_intervals(
     await update.message.reply_text(
         f"✅ Интервал обсуждений: {min_m}–{max_m} мин"
     )
+
+
+async def _update_discussion_inactivity_pause(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    context.user_data.pop("awaiting", None)
+    minutes = _parse_minutes_input(text.strip())
+    if minutes is None:
+        await update.message.reply_text("Введите число: 0 (выкл) или минуты.")
+        return
+    if minutes < 0:
+        await update.message.reply_text("Значение не может быть отрицательным.")
+        return
+    pipeline_name = context.user_data.get("pipeline")
+    if not pipeline_name:
+        await update.message.reply_text("Пайплайн не выбран.")
+        return
+    with get_session() as session:
+        pipeline = get_pipeline_by_name(session, pipeline_name)
+        if not pipeline or pipeline.pipeline_type != "DISCUSSION":
+            await update.message.reply_text("Пайплайн не найден или не типа Обсуждение.")
+            return
+        try:
+            update_discussion_inactivity_pause(
+                session, pipeline.id, inactivity_pause_minutes=minutes
+            )
+            session.commit()
+        except ValueError as e:
+            await update.message.reply_text(str(e))
+            return
+    label = "0 (выкл)" if minutes == 0 else f"{minutes} мин"
+    _audit_log(
+        "pipeline.discussion_inactivity",
+        context.user_data.get("user_id"),
+        f"{pipeline_name} -> {label}",
+    )
+    await update.message.reply_text(f"✅ Пауза при тишине: {label}")
 
 
 async def _update_pipeline_delete(

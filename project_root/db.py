@@ -760,6 +760,16 @@ def update_discussion_intervals(
     settings.max_interval_minutes = max_interval_minutes
 
 
+def update_discussion_inactivity_pause(
+    session: Session, pipeline_id: int, inactivity_pause_minutes: int
+) -> None:
+    """Update inactivity pause for a discussion pipeline. 0 = disabled."""
+    settings = session.get(DiscussionSettings, pipeline_id)
+    if settings is None:
+        raise ValueError("Discussion settings not found for pipeline")
+    settings.inactivity_pause_minutes = inactivity_pause_minutes
+
+
 def update_pipeline_mode(session: Session, pipeline: Pipeline, mode: str) -> None:
     pipeline.posting_mode = mode
 
