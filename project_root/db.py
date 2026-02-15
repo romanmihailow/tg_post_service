@@ -558,6 +558,7 @@ def _ensure_pipelines(session: Session, pipelines: Iterable[PipelineConfig]) -> 
                     )
                 )
         if pipeline_config.pipeline_type == "DISCUSSION":
+            # k_min/k_max come from config (PipelineConfig defaults or DISCUSSION_K_MIN/K_MAX env); synced on every init_db.
             upsert_discussion_settings(
                 session,
                 pipeline_id=pipeline.id,

@@ -241,6 +241,9 @@ class Config(BaseSettings):
     TELEGRAM_WRITER_API_HASH: Optional[str] = Field(default=None)
     TELEGRAM_WRITER_SESSION_NAME: Optional[str] = Field(default=None)
     PIPELINES_JSON: Optional[str] = Field(default=None)
+    # Override discussion post window for all DISCUSSION pipelines (used by init_db). If set, applied on every startup.
+    DISCUSSION_K_MIN: Optional[int] = Field(default=None)
+    DISCUSSION_K_MAX: Optional[int] = Field(default=None)
     DEST_CHANNEL: Optional[str] = Field(default=None)
     SOURCE_CHANNELS: List[str] = Field(default_factory=list)
     OPENAI_API_KEY: Optional[str] = Field(default=None)
@@ -377,7 +380,19 @@ class Config(BaseSettings):
                 data = [data]
             if not isinstance(data, list):
                 raise ValueError("PIPELINES_JSON must be a list of pipeline objects")
-            return [PipelineConfig(**item) for item in data]
+            result = [PipelineConfig(**item) for item in data]
+            # Env override: DISCUSSION_K_MIN/K_MAX apply to all DISCUSSION pipelines on init (CI/CD-friendly).
+            if self.DISCUSSION_K_MIN is not None or self.DISCUSSION_K_MAX is not None:
+                for i, p in enumerate(result):
+                    if p.pipeline_type == "DISCUSSION":
+                        kw = {}
+                        if self.DISCUSSION_K_MIN is not None:
+                            kw["discussion_k_min"] = self.DISCUSSION_K_MIN
+                        if self.DISCUSSION_K_MAX is not None:
+                            kw["discussion_k_max"] = self.DISCUSSION_K_MAX
+                        if kw:
+                            result[i] = p.model_copy(update=kw)
+            return result
         if self.DEST_CHANNEL and self.SOURCE_CHANNELS:
             return [
                 PipelineConfig(
