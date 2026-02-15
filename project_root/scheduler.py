@@ -991,9 +991,10 @@ async def _process_pipeline_once(
 
     if not messages:
         logger.info(
-            "No new messages in pipeline %s source %s",
+            "No new messages in pipeline %s source %s (last_message_id=%s)",
             pipeline.name,
             source.source_channel,
+            source.last_message_id,
         )
         state.current_source_index = (index + 1) % len(sources)
         return False
