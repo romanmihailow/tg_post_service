@@ -21,6 +21,7 @@ from telegram.ext import (
     filters,
 )
 
+
 from project_root.config import Config, resolve_session_path
 from project_root.config import (
     BehaviorProfileConfig,
