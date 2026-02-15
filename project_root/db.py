@@ -745,6 +745,21 @@ def update_pipeline_interval(
     pipeline.interval_seconds = interval_seconds
 
 
+def update_discussion_intervals(
+    session: Session,
+    pipeline_id: int,
+    *,
+    min_interval_minutes: int,
+    max_interval_minutes: int,
+) -> None:
+    """Update min/max interval between discussion posts for a pipeline."""
+    settings = session.get(DiscussionSettings, pipeline_id)
+    if settings is None:
+        raise ValueError("Discussion settings not found for pipeline")
+    settings.min_interval_minutes = min_interval_minutes
+    settings.max_interval_minutes = max_interval_minutes
+
+
 def update_pipeline_mode(session: Session, pipeline: Pipeline, mode: str) -> None:
     pipeline.posting_mode = mode
 

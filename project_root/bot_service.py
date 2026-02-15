@@ -49,6 +49,7 @@ from project_root.db import (
     get_userbot_persona,
     mark_invite_code_used,
     mark_invite_used,
+    update_discussion_intervals,
     update_pipeline_destination,
     update_pipeline_interval,
     update_pipeline_mode,
@@ -261,7 +262,11 @@ def _pipelines_list_keyboard(
 
 
 def _pipeline_menu_keyboard(
-    *, can_edit: bool = False, can_delete: bool = False, can_view: bool = True
+    *,
+    can_edit: bool = False,
+    can_delete: bool = False,
+    can_view: bool = True,
+    is_discussion: bool = False,
 ) -> ReplyKeyboardMarkup:
     rows: list[list[str]] = []
     if can_view:
@@ -270,6 +275,8 @@ def _pipeline_menu_keyboard(
         rows.append(["Канал назначения"])
         rows.append(["Добавить источник", "Удалить источник"])
         rows.append(["Режим", "Интервал"])
+        if is_discussion:
+            rows.append(["Интервал обсуждений"])
         rows.append(["Вкл/выкл"])
     if can_delete:
         rows.append(["Удалить пайплайн"])
@@ -597,6 +604,9 @@ async def _pipeline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         ):
             await update.message.reply_text("Недостаточно прав.")
             return
+        with get_session() as session:
+            pipeline_obj = get_pipeline_by_name(session, pipeline)
+            is_discussion = pipeline_obj and pipeline_obj.pipeline_type == "DISCUSSION"
         await _set_menu(
             update,
             context,
@@ -606,6 +616,7 @@ async def _pipeline_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 can_edit=_has_permission(config, user_id, "edit"),
                 can_delete=_has_permission(config, user_id, "delete"),
                 can_view=_has_permission(config, user_id, "view"),
+                is_discussion=is_discussion,
             ),
         )
         return
@@ -1293,6 +1304,9 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         if text in pipeline_names:
             context.user_data["pipeline"] = text
+            with get_session() as session:
+                pipeline = get_pipeline_by_name(session, text)
+                is_discussion = pipeline and pipeline.pipeline_type == "DISCUSSION"
             await _set_menu(
                 update,
                 context,
@@ -1302,6 +1316,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                     can_edit=_has_permission(config, user_id, "edit"),
                     can_delete=_has_permission(config, user_id, "delete"),
                     can_view=_has_permission(config, user_id, "view"),
+                    is_discussion=is_discussion,
                 ),
             )
             return
@@ -1395,6 +1410,32 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             await update.message.reply_text(
                 "Выберите интервал (минуты):",
                 reply_markup=_interval_keyboard(minutes if pipeline else None),
+            )
+            return
+        if text == "Интервал обсуждений":
+            if not _has_permission(config, user_id, "edit"):
+                await update.message.reply_text("Недостаточно прав.")
+                return
+            with get_session() as session:
+                pipeline_obj = get_pipeline_by_name(session, pipeline_name)
+                if not pipeline_obj or pipeline_obj.pipeline_type != "DISCUSSION":
+                    await update.message.reply_text(
+                        "Доступно только для пайплайнов типа Обсуждение."
+                    )
+                    return
+                settings = get_discussion_settings(session, pipeline_obj.id)
+                if not settings:
+                    await update.message.reply_text(
+                        "Настройки обсуждения не найдены."
+                    )
+                    return
+            await update.message.reply_text(
+                f"⚙️ Интервал между вопросами\n"
+                f"Текущий: {settings.min_interval_minutes}–{settings.max_interval_minutes} мин"
+            )
+            context.user_data["awaiting"] = {"type": "pipeline_discussion_interval"}
+            await update.message.reply_text(
+                "Введите min max через пробел (например: 5 10):"
             )
             return
         if text == "Режим":
@@ -1903,6 +1944,9 @@ async def _handle_awaiting(
     if awaiting.get("type") == "pipeline_mode":
         await _update_pipeline_mode(update, context, text)
         return True
+    if awaiting.get("type") == "pipeline_discussion_interval":
+        await _update_discussion_intervals(update, context, text)
+        return True
     if awaiting.get("type") == "pipeline_delete":
         await _update_pipeline_delete(update, context, text)
         return True
@@ -2294,6 +2338,57 @@ async def _update_pipeline_mode(
         f"{pipeline_name} -> {normalized}",
     )
     await update.message.reply_text(f"✅ Режим: {normalized}")
+
+
+async def _update_discussion_intervals(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    context.user_data.pop("awaiting", None)
+    parts = text.strip().split()
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "Введите два числа через пробел: min max (например: 5 10)"
+        )
+        return
+    min_m = _parse_minutes_input(parts[0])
+    max_m = _parse_minutes_input(parts[1])
+    if min_m is None or max_m is None:
+        await update.message.reply_text("Нужны целые числа минут.")
+        return
+    if min_m <= 0 or max_m <= 0:
+        await update.message.reply_text("Минуты должны быть больше 0.")
+        return
+    if min_m > max_m:
+        await update.message.reply_text("min должен быть не больше max.")
+        return
+    pipeline_name = context.user_data.get("pipeline")
+    if not pipeline_name:
+        await update.message.reply_text("Пайплайн не выбран.")
+        return
+    with get_session() as session:
+        pipeline = get_pipeline_by_name(session, pipeline_name)
+        if not pipeline or pipeline.pipeline_type != "DISCUSSION":
+            await update.message.reply_text("Пайплайн не найден или не типа Обсуждение.")
+            return
+        try:
+            update_discussion_intervals(
+                session,
+                pipeline.id,
+                min_interval_minutes=min_m,
+                max_interval_minutes=max_m,
+            )
+            session.commit()
+        except ValueError as e:
+            await update.message.reply_text(str(e))
+            return
+    _audit_log(
+        "pipeline.discussion_interval",
+        context.user_data.get("user_id"),
+        f"{pipeline_name} -> {min_m}-{max_m} мин",
+    )
+    await update.message.reply_text(
+        f"✅ Интервал обсуждений: {min_m}–{max_m} мин"
+    )
 
 
 async def _update_pipeline_delete(
