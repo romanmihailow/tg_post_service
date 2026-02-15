@@ -1240,7 +1240,10 @@ async def _process_discussion_pipeline(
             message="no candidate posts",
         )
         return sent_any
-    logger.info("discussion_candidates pipeline=%s total=%s", pipeline.name, len(candidates_all))
+    logger.info(
+        "discussion_candidates pipeline=%s source=%s total=%s",
+        pipeline.name, settings.source_pipeline_name, len(candidates_all),
+    )
     candidates = candidates_all
     removed_by_last_post = 0
     removed_by_topics = 0
@@ -1273,13 +1276,13 @@ async def _process_discussion_pipeline(
         removed_by_topics = before - len(candidates)
         if filtered_by_topics:
             logger.info(
-                "discussion_filter pipeline=%s reason=recent_topics removed=%s msg_ids=%s topics=%s before=%s after=%s",
-                pipeline.name, removed_by_topics, removed_ids[:5], list(recent_topics)[:5], before, len(candidates),
+                "discussion_filter pipeline=%s source=%s reason=recent_topics removed=%s msg_ids=%s topics=%s before=%s after=%s",
+                pipeline.name, settings.source_pipeline_name, removed_by_topics, removed_ids[:5], list(recent_topics)[:5], before, len(candidates),
             )
         else:
             logger.info(
-                "discussion_filter pipeline=%s reason=recent_topics removed=%s msg_ids=%s topics=%s before=%s after=0 (skip repeat)",
-                pipeline.name, removed_by_topics, removed_ids[:5], list(recent_topics)[:5], before,
+                "discussion_filter pipeline=%s source=%s reason=recent_topics removed=%s msg_ids=%s topics=%s before=%s after=0 (skip repeat)",
+                pipeline.name, settings.source_pipeline_name, removed_by_topics, removed_ids[:5], list(recent_topics)[:5], before,
             )
 
     fp_ring_size = getattr(config, "DISCUSSION_FINGERPRINT_RING_SIZE", 10)
@@ -1305,7 +1308,7 @@ async def _process_discussion_pipeline(
             )
 
     bm25_window = getattr(config, "DEDUP_WINDOW_SIZE", 30)
-    bm25_threshold = getattr(config, "DEDUP_BM25_THRESHOLD", 7.0)
+    bm25_threshold = getattr(config, "DEDUP_BM25_THRESHOLD", 8.5)
     if bm25_window > 0 and len(candidates) > 1:
         before = len(candidates)
         filtered_bm25 = [
