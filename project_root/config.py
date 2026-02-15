@@ -273,11 +273,14 @@ class Config(BaseSettings):
     BLACKBOX_DISTORT_MIN: int = Field(default=2)
     BLACKBOX_DISTORT_MAX: int = Field(default=4)
     DEDUP_ENABLED: bool = Field(default=True)
-    DEDUP_WINDOW_SIZE: int = Field(default=30)
+    DEDUP_WINDOW_SIZE: int = Field(
+        default=15,
+        description="BM25 corpus size: fewer posts = less sibling similarity (sport/news share vocabulary).",
+    )
     DEDUP_BM25_THRESHOLD: float = Field(
-        default=8.5,
+        default=10.5,
         description="BM25 similarity threshold: posts with score >= threshold are filtered as duplicates. "
-        "7.0 was too strict for sports/news (shared vocabulary). 8.5 filters only near-duplicates.",
+        "8.5 was too strict for sports/news (shared vocabulary). 10.5 filters only near-exact duplicates.",
     )
 
     # Pipeline 1 Discussion anti-repeat (fingerprint ring buffer)

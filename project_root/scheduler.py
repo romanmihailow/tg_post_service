@@ -1018,13 +1018,14 @@ async def _process_pipeline_once(
             state.current_source_index = (index + 1) % len(sources)
             return False
     if config.DEDUP_ENABLED and original_text:
-        if _is_similar_news_bm25(
+        is_similar, _ = _is_similar_news_bm25(
             session,
             pipeline.id,
             original_text,
             config.DEDUP_WINDOW_SIZE,
             config.DEDUP_BM25_THRESHOLD,
-        ):
+        )
+        if is_similar:
             logger.info(
                 "Skipping similar news in pipeline %s source %s",
                 pipeline.name,
@@ -1307,28 +1308,36 @@ async def _process_discussion_pipeline(
                 pipeline.name, removed_by_fingerprint, removed_ids[:5], removed_fps[:3], before,
             )
 
-    bm25_window = getattr(config, "DEDUP_WINDOW_SIZE", 30)
-    bm25_threshold = getattr(config, "DEDUP_BM25_THRESHOLD", 8.5)
+    bm25_window = getattr(config, "DEDUP_WINDOW_SIZE", 15)
+    bm25_threshold = getattr(config, "DEDUP_BM25_THRESHOLD", 10.5)
     if bm25_window > 0 and len(candidates) > 1:
         before = len(candidates)
-        filtered_bm25 = [
-            c for c in candidates
-            if not _is_similar_news_bm25(session, source_pipeline.id, c.text, bm25_window, bm25_threshold)
-        ]
+        filtered_bm25 = []
+        removed_with_scores: list[tuple[int, float]] = []
+        for c in candidates:
+            is_similar, max_score = _is_similar_news_bm25(
+                session, source_pipeline.id, c.text, bm25_window, bm25_threshold
+            )
+            if not is_similar:
+                filtered_bm25.append(c)
+            else:
+                removed_with_scores.append((c.message_id, max_score))
         removed = [c for c in candidates if c not in filtered_bm25]
         removed_ids = [c.message_id for c in removed]
         candidates = filtered_bm25
         if filtered_bm25:
             removed_by_bm25 = before - len(candidates)
             logger.info(
-                "discussion_filter pipeline=%s reason=bm25_similar removed=%s msg_ids=%s threshold=%s before=%s after=%s",
+                "discussion_filter pipeline=%s reason=bm25_similar removed=%s msg_ids=%s threshold=%s before=%s after=%s scores=%s",
                 pipeline.name, removed_by_bm25, removed_ids[:5], bm25_threshold, before, len(candidates),
+                [(mid, round(s, 1)) for mid, s in removed_with_scores[:5]],
             )
         else:
             removed_by_bm25 = before
             logger.info(
-                "discussion_filter pipeline=%s reason=bm25_similar removed=%s msg_ids=%s threshold=%s before=%s after=0 (skip repeat)",
+                "discussion_filter pipeline=%s reason=bm25_similar removed=%s msg_ids=%s threshold=%s before=%s after=0 (skip repeat) scores=%s",
                 pipeline.name, removed_by_bm25, removed_ids[:5], bm25_threshold, before,
+                [(mid, round(s, 1)) for mid, s in removed_with_scores[:5]],
             )
 
     if not candidates:
@@ -3507,14 +3516,13 @@ def _is_similar_news_bm25(
     text: str,
     window_size: int,
     threshold: float,
-) -> bool:
+) -> tuple[bool, float]:
     """Check if text is similar to recent posts in post_history (BM25).
-    Excludes the candidate text itself from corpus to avoid self-match inflation:
-    candidates come from the same channel as post_history, so the candidate
-    is often IN post_history — comparing to itself would always score high.
+    Excludes the candidate text itself from corpus to avoid self-match inflation.
+    Returns (is_similar, max_score) for logging.
     """
     if window_size <= 0:
-        return False
+        return (False, 0.0)
     recent_texts = (
         session.execute(
             select(PostHistory.text)
@@ -3526,27 +3534,25 @@ def _is_similar_news_bm25(
         .all()
     )
     if not recent_texts:
-        return False
+        return (False, 0.0)
     text_stripped = text.strip()
-    # Exclude self: candidate often IS in post_history (same channel as source).
-    # Self-match would always exceed threshold and wrongly filter the post.
     recent_texts = [t for t in recent_texts if (t or "").strip() != text_stripped]
     if not recent_texts:
-        return False
+        return (False, 0.0)
     query_tokens = _tokenize(text)
     if not query_tokens:
-        return False
+        return (False, 0.0)
     corpus_tokens = []
     for item in recent_texts:
         tokens = _tokenize(item)
         if tokens:
             corpus_tokens.append(tokens)
     if not corpus_tokens:
-        return False
+        return (False, 0.0)
     bm25 = BM25Okapi(corpus_tokens)
     scores = bm25.get_scores(query_tokens)
     max_score = max(scores) if len(scores) > 0 else 0.0
-    return max_score >= threshold
+    return (max_score >= threshold, max_score)
 
 
 def _store_recent_post(
