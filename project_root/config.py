@@ -291,6 +291,10 @@ class Config(BaseSettings):
     REACTION_DAILY_LIMIT_PER_BOT: int = Field(default=10)
     REACTION_COOLDOWN_MINUTES: int = Field(default=30)
     REACTION_EMOJIS: str = Field(default='["👍","🔥","🤔"]')
+    REACTION_MAX_REACTIONS_PER_POST_PER_DAY: int = Field(default=1)
+    REACTION_USE_ALLOWED_FROM_TELEGRAM: bool = Field(default=True)
+    REACTION_ALLOWED_SAMPLE_LIMIT: int = Field(default=80)
+    REACTION_MIN_BOTS_PER_POST: int = Field(default=1)
 
     # Pipeline 2 chat reactions (on user messages we reply to)
     CHAT_REACTIONS_ENABLED: bool = Field(default=False)

@@ -87,8 +87,10 @@ PERSONA_PROFILE_OVERRIDES: dict[str, dict[str, str]] = {
 # In-memory reaction throttling (Pipeline 1 channel). Resets on process restart.
 _REACTION_LAST_AT: dict[tuple[str, str], datetime] = {}  # (account_name, chat_id)
 _REACTION_TODAY: dict[tuple[str, str, str], int] = {}  # (account_name, chat_id, date_str)
-# (chat_id, message_id) -> date_iso: already reacted to this post today (P1)
-_REACTION_REACTED_TODAY: dict[tuple[str, int], str] = {}
+# (chat_id, message_id) -> count: reactions placed on this post today
+_REACTION_POST_REACT_COUNT: dict[tuple[str, int], int] = {}
+# (chat_id, message_id, account_name) -> date_iso: bot already reacted to this post today
+_REACTION_POST_REACTED_BY: dict[tuple[str, int, str], str] = {}
 _REACTION_DAY: str | None = None  # YYYY-MM-DD for daily reset
 
 # In-memory chat reaction throttling (Pipeline 2). Resets on process restart.
@@ -98,11 +100,31 @@ _CHAT_REACTION_REACTED_TODAY: dict[tuple[str, int], str] = {}
 _CHAT_REACTION_DAY: str | None = None
 
 
-# Keywords that suggest sensitive content (conflict/tragedy) — avoid 🔥
+# Keywords that suggest sensitive content (conflict/tragedy) — avoid 🔥 😎 😂
 _REACTION_SENSITIVE_KEYWORDS = frozenset(
     [
         "конфликт", "войн", "трагеди", "санкц", "обстрел", "атак", "жертв",
-        "погиб", "умер", "смерт", "теракт", "катастроф", "авари",
+        "погиб", "умер", "смерт", "теракт", "катастроф", "авари", "насили",
+    ]
+)
+# Scandal/exposé/shock — prefer ⚡ 👀 🤔
+_REACTION_SCANDAL_KEYWORDS = frozenset(
+    [
+        "разоблачен", "скандал", "шок", "внезапно", "утечк", "хак", "мошенник",
+        "обман", "подделка", "фейк", "расследован",
+    ]
+)
+# Sport/victory — prefer ✅ 🔥 😎
+_REACTION_SPORT_KEYWORDS = frozenset(
+    [
+        "спорт", "победа", "рекорд", "гол", "матч", "чемпион", "турнир",
+        "олимпиад", "медал",
+    ]
+)
+# Boring/routine — prefer 🥱
+_REACTION_BORING_KEYWORDS = frozenset(
+    [
+        "скучно", "опять", "рутина", "в сотый раз", "как всегда", "как обычно",
     ]
 )
 
@@ -240,18 +262,47 @@ async def _resolve_post_message_id(client, channel: str, text: str, limit: int =
 
 def _pick_reaction_emoji(text: str, emojis: list[str]) -> tuple[str, bool]:
     """Pick emoji for reaction. Avoid 🔥 for sensitive content. Returns (emoji, sensitive)."""
-    if not emojis:
-        return ("👍", False)
+    emoji, meta = _pick_reaction_emoji_from_candidates(text, emojis)
+    return (emoji, meta.get("sensitive", False))
+
+
+def _pick_reaction_emoji_from_candidates(
+    text: str, candidates: list[str]
+) -> tuple[str, dict]:
+    """Rule-based emoji pick for Pipeline 1. Returns (emoji, meta) with meta={sensitive, rule}."""
+    if not candidates:
+        return ("👍", {"sensitive": False, "rule": "fallback_empty"})
     norm = (text or "").strip().lower()
     if not norm:
-        return (random.choice(emojis), False)
-    has_sensitive = any(kw in norm for kw in _REACTION_SENSITIVE_KEYWORDS)
-    if has_sensitive and "🤔" in emojis:
-        return ("🤔", True)
-    if has_sensitive and "🔥" in emojis:
-        safe = [e for e in emojis if e != "🔥"]
-        return (random.choice(safe) if safe else emojis[0], True)
-    return (random.choice(emojis), False)
+        return (random.choice(candidates), {"sensitive": False, "rule": "random"})
+    candidates_set = set(candidates)
+
+    # Sensitive: avoid 🔥 😎 😂, prefer 🤔 👀 ✅
+    if any(kw in norm for kw in _REACTION_SENSITIVE_KEYWORDS):
+        prefer = [e for e in ["🤔", "👀", "✅"] if e in candidates_set]
+        avoid = {"🔥", "😎", "😂"}
+        safe = [e for e in candidates if e not in avoid]
+        pick = random.choice(prefer) if prefer else (random.choice(safe) if safe else candidates[0])
+        return (pick, {"sensitive": True, "rule": "sensitive"})
+
+    # Scandal/exposé: prefer ⚡ 👀 🤔
+    if any(kw in norm for kw in _REACTION_SCANDAL_KEYWORDS):
+        prefer = [e for e in ["⚡", "👀", "🤔"] if e in candidates_set]
+        if prefer:
+            return (random.choice(prefer), {"sensitive": False, "rule": "scandal"})
+
+    # Sport/victory: prefer ✅ 🔥 😎
+    if any(kw in norm for kw in _REACTION_SPORT_KEYWORDS):
+        prefer = [e for e in ["✅", "🔥", "😎"] if e in candidates_set]
+        if prefer:
+            return (random.choice(prefer), {"sensitive": False, "rule": "sport"})
+
+    # Boring: prefer 🥱
+    if any(kw in norm for kw in _REACTION_BORING_KEYWORDS):
+        if "🥱" in candidates_set:
+            return ("🥱", {"sensitive": False, "rule": "boring"})
+
+    return (random.choice(candidates), {"sensitive": False, "rule": "random"})
 
 
 def _reaction_ensure_date_reset(now: datetime) -> None:
@@ -260,7 +311,8 @@ def _reaction_ensure_date_reset(now: datetime) -> None:
     today = now.strftime("%Y-%m-%d")
     if _REACTION_DAY is not None and _REACTION_DAY != today:
         _REACTION_TODAY.clear()
-        _REACTION_REACTED_TODAY.clear()
+        _REACTION_POST_REACT_COUNT.clear()
+        _REACTION_POST_REACTED_BY.clear()
     _REACTION_DAY = today
 
 
@@ -429,7 +481,7 @@ async def _try_set_reaction_on_news_post(
     selected_post_message_id: int | None = None,
     selected_post_chat_id: str | None = None,
 ) -> None:
-    """Pipeline 1: optionally set reaction on the selected news post. No-op if disabled/skipped."""
+    """Pipeline 1: optionally set reaction(s) on the selected news post. No-op if disabled/skipped."""
     if not getattr(config, "REACTIONS_ENABLED", False):
         return
     _reaction_ensure_date_reset(now)
@@ -447,9 +499,30 @@ async def _try_set_reaction_on_news_post(
         )
         return
     today = now.strftime("%Y-%m-%d")
-    if _REACTION_REACTED_TODAY.get((chat_id, msg_id)) == today:
+    max_per_post = getattr(config, "REACTION_MAX_REACTIONS_PER_POST_PER_DAY", 1)
+    use_allowed = getattr(config, "REACTION_USE_ALLOWED_FROM_TELEGRAM", True)
+    sample_limit = getattr(config, "REACTION_ALLOWED_SAMPLE_LIMIT", 80)
+    min_bots = getattr(config, "REACTION_MIN_BOTS_PER_POST", 1)
+    cooldown = getattr(config, "REACTION_COOLDOWN_MINUTES", 30)
+    daily_limit = getattr(config, "REACTION_DAILY_LIMIT_PER_BOT", 10)
+    reply_names = {b.account_name for b in selected_bots_for_replies}
+
+    # Get emoji candidates: from Telegram allowed or config fallback
+    if use_allowed:
+        client = primary_account.reader_client
+        allowed = await get_available_reaction_emojis(client, chat_id)
+        if allowed:
+            candidates = allowed[:sample_limit]
+        else:
+            candidates = config.reaction_emojis_list()
+    else:
+        candidates = config.reaction_emojis_list()
+
+    post_count = _REACTION_POST_REACT_COUNT.get((chat_id, msg_id), 0)
+    attempts_limit = min(max_per_post - post_count, 3)
+    if attempts_limit <= 0:
         logger.info(
-            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=already_reacted_today",
+            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=post_daily_cap",
             chat_id,
             msg_id,
         )
@@ -461,60 +534,99 @@ async def _try_set_reaction_on_news_post(
             msg_id,
         )
         return
-    cooldown = getattr(config, "REACTION_COOLDOWN_MINUTES", 30)
-    daily_limit = getattr(config, "REACTION_DAILY_LIMIT_PER_BOT", 10)
-    emojis = config.reaction_emojis_list()
-    reaction_candidates = _filter_bots_for_reaction(
-        available_bots, chat_id, now, cooldown, daily_limit
-    )
-    if not reaction_candidates:
-        logger.info(
-            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=limit",
-            chat_id,
-            msg_id,
+
+    for _ in range(attempts_limit):
+        post_count = _REACTION_POST_REACT_COUNT.get((chat_id, msg_id), 0)
+        if post_count >= max_per_post:
+            logger.info(
+                "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=post_daily_cap",
+                chat_id,
+                msg_id,
+            )
+            break
+        reaction_candidates = _filter_bots_for_reaction(
+            available_bots, chat_id, now, cooldown, daily_limit
         )
-        return
-    reply_names = {b.account_name for b in selected_bots_for_replies}
-    preferred = [b for b in reaction_candidates if b.account_name not in reply_names]
-    bot_row = random.choice(preferred) if preferred else random.choice(reaction_candidates)
-    account = accounts.get(bot_row.account_name)
-    if not account or not account.writer_client:
-        logger.warning(
-            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s bot=%s why=no_permission",
-            chat_id,
-            msg_id,
-            bot_row.account_name,
-        )
-        return
-    emoji, sensitive = _pick_reaction_emoji(news_text, emojis)
-    logger.info(
-        "reaction attempt reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s",
-        chat_id,
-        msg_id,
-        bot_row.account_name,
-        emoji,
-    )
-    ok = await set_message_reaction(
-        account.writer_client, chat_id, msg_id, emoji
-    )
-    if ok:
-        _update_reaction_state(bot_row.account_name, chat_id, now)
-        _REACTION_REACTED_TODAY[(chat_id, msg_id)] = today
+        # Exclude bots that already reacted to this post today
+        before_filter = len(reaction_candidates)
+        reaction_candidates = [
+            b for b in reaction_candidates
+            if _REACTION_POST_REACTED_BY.get((chat_id, msg_id, b.account_name)) != today
+        ]
+        if not reaction_candidates:
+            why = "bot_already_reacted" if before_filter > 0 else "limit"
+            logger.info(
+                "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s why=%s",
+                chat_id,
+                msg_id,
+                why,
+            )
+            break
+        preferred = [b for b in reaction_candidates if b.account_name not in reply_names]
+        bot_row = random.choice(preferred) if preferred else random.choice(reaction_candidates)
+        account = accounts.get(bot_row.account_name)
+        if not account or not account.writer_client:
+            logger.info(
+                "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s bot=%s why=no_permission",
+                chat_id,
+                msg_id,
+                bot_row.account_name,
+            )
+            continue
+        emoji, meta = _pick_reaction_emoji_from_candidates(news_text, candidates)
+        rule = meta.get("rule", "random")
+        sensitive = meta.get("sensitive", False)
         logger.info(
-            "reaction set reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s sensitive=%s",
+            "reaction attempt reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s rule=%s sensitive=%s candidates_count=%s",
             chat_id,
             msg_id,
             bot_row.account_name,
             emoji,
+            rule,
             sensitive,
+            len(candidates),
         )
-    else:
-        logger.warning(
-            "reaction skipped reason=pipeline1_news_post chat=%s msg_id=%s bot=%s why=api_error",
-            chat_id,
-            msg_id,
-            bot_row.account_name,
-        )
+        try:
+            ok = await set_message_reaction(
+                account.writer_client, chat_id, msg_id, emoji
+            )
+        except Exception as e:
+            err_type = "reactions_not_allowed" if "REACTIONS" in str(e).upper() or "REACTION" in str(e).upper() else "api_error"
+            logger.warning(
+                "reaction failed reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s why=api_error err_type=%s err=%s",
+                chat_id,
+                msg_id,
+                bot_row.account_name,
+                emoji,
+                err_type,
+                e,
+            )
+            break
+        if ok:
+            _update_reaction_state(bot_row.account_name, chat_id, now)
+            _REACTION_POST_REACT_COUNT[(chat_id, msg_id)] = post_count + 1
+            _REACTION_POST_REACTED_BY[(chat_id, msg_id, bot_row.account_name)] = today
+            new_count = post_count + 1
+            logger.info(
+                "reaction set reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s post_count=%s/%s",
+                chat_id,
+                msg_id,
+                bot_row.account_name,
+                emoji,
+                new_count,
+                max_per_post,
+            )
+            if new_count >= min(min_bots, max_per_post):
+                break
+        else:
+            logger.warning(
+                "reaction failed reason=pipeline1_news_post chat=%s msg_id=%s bot=%s emoji=%s why=api_error err_type=set_message_reaction_returned_false err=...",
+                chat_id,
+                msg_id,
+                bot_row.account_name,
+                emoji,
+            )
+            break
 
 
 async def _try_set_admin_reaction_on_source_post(
