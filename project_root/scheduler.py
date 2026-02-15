@@ -3508,6 +3508,11 @@ def _is_similar_news_bm25(
     window_size: int,
     threshold: float,
 ) -> bool:
+    """Check if text is similar to recent posts in post_history (BM25).
+    Excludes the candidate text itself from corpus to avoid self-match inflation:
+    candidates come from the same channel as post_history, so the candidate
+    is often IN post_history — comparing to itself would always score high.
+    """
     if window_size <= 0:
         return False
     recent_texts = (
@@ -3520,6 +3525,12 @@ def _is_similar_news_bm25(
         .scalars()
         .all()
     )
+    if not recent_texts:
+        return False
+    text_stripped = text.strip()
+    # Exclude self: candidate often IS in post_history (same channel as source).
+    # Self-match would always exceed threshold and wrongly filter the post.
+    recent_texts = [t for t in recent_texts if (t or "").strip() != text_stripped]
     if not recent_texts:
         return False
     query_tokens = _tokenize(text)
