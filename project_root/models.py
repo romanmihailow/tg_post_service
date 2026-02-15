@@ -157,7 +157,7 @@ class DiscussionSettings(Base):
         Text, nullable=True
     )
     activity_timezone: Mapped[str] = mapped_column(
-        String, nullable=False, default="Europe/Moscow"
+        String, nullable=False, default="Asia/Yekaterinburg"
     )
     min_interval_minutes: Mapped[int] = mapped_column(
         Integer, nullable=False, default=90

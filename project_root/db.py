@@ -156,7 +156,7 @@ def _ensure_discussion_settings_schema() -> None:
         if "activity_timezone" not in columns:
             connection.execute(
                 text(
-                    "ALTER TABLE discussion_settings ADD COLUMN activity_timezone TEXT DEFAULT 'Europe/Moscow'"
+                    "ALTER TABLE discussion_settings ADD COLUMN activity_timezone TEXT DEFAULT 'Asia/Yekaterinburg'"
                 )
             )
         if "min_interval_minutes" not in columns:
@@ -194,6 +194,13 @@ def _ensure_discussion_settings_schema() -> None:
             text(
                 "UPDATE discussion_settings SET k_min=15, k_max=20 "
                 "WHERE k_min=5 AND k_max=8"
+            )
+        )
+        # Migration: switch activity_timezone from MSK to Ufa (matches user screenshots)
+        connection.execute(
+            text(
+                "UPDATE discussion_settings SET activity_timezone='Asia/Yekaterinburg' "
+                "WHERE activity_timezone='Europe/Moscow'"
             )
         )
         connection.commit()
@@ -932,7 +939,7 @@ def upsert_discussion_settings(
             reply_to_reply_probability=reply_to_reply_probability,
             activity_windows_weekdays_json=activity_windows_weekdays_json,
             activity_windows_weekends_json=activity_windows_weekends_json,
-            activity_timezone=activity_timezone or "Europe/Moscow",
+            activity_timezone=activity_timezone or "Asia/Yekaterinburg",
             min_interval_minutes=min_interval_minutes or 90,
             max_interval_minutes=max_interval_minutes or 180,
             inactivity_pause_minutes=inactivity_pause_minutes or 60,

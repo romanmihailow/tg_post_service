@@ -143,7 +143,7 @@ class PipelineConfig(BaseModel):
     discussion_reply_to_reply_probability: int = 15
     discussion_activity_windows_weekdays_json: Optional[str] = Field(default=None)
     discussion_activity_windows_weekends_json: Optional[str] = Field(default=None)
-    discussion_activity_timezone: str = "Europe/Moscow"
+    discussion_activity_timezone: str = "Asia/Yekaterinburg"  # Ufa, matches user screenshots
     discussion_min_interval_minutes: int = 90
     discussion_max_interval_minutes: int = 180
     discussion_inactivity_pause_minutes: int = 60

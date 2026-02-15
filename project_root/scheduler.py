@@ -1242,15 +1242,24 @@ async def _process_discussion_pipeline(
         return sent_any
     logger.info("discussion_candidates pipeline=%s total=%s", pipeline.name, len(candidates_all))
     candidates = candidates_all
+    removed_by_last_post = 0
+    removed_by_topics = 0
+    removed_by_fingerprint = 0
+    removed_by_bm25 = 0
 
     if state.last_source_post_id and len(candidates_all) > 1:
         before = len(candidates)
         filtered = [
             item for item in candidates_all if item.message_id != state.last_source_post_id
         ]
-        if filtered:
-            candidates = filtered
-            logger.info("discussion_filter pipeline=%s reason=last_post_id before=%s after=%s", pipeline.name, before, len(candidates))
+        removed_ids = [c.message_id for c in candidates_all if c.message_id == state.last_source_post_id]
+        candidates = filtered
+        removed_by_last_post = before - len(candidates)
+        if removed_ids:
+            logger.info(
+                "discussion_filter pipeline=%s reason=last_post_id removed=%s msg_ids=%s before=%s after=%s",
+                pipeline.name, removed_by_last_post, removed_ids, before, len(candidates),
+            )
 
     recent_topics = set(_load_recent_topics(state))
     if recent_topics and len(candidates) > 1:
@@ -1259,20 +1268,41 @@ async def _process_discussion_pipeline(
             item for item in candidates
             if not recent_topics.intersection({t.lower() for t in extract_topics_for_text(item.text)})
         ]
+        removed_ids = [c.message_id for c in candidates if c not in filtered_by_topics]
         candidates = filtered_by_topics
+        removed_by_topics = before - len(candidates)
         if filtered_by_topics:
-            logger.info("discussion_filter pipeline=%s reason=recent_topics before=%s after=%s", pipeline.name, before, len(candidates))
+            logger.info(
+                "discussion_filter pipeline=%s reason=recent_topics removed=%s msg_ids=%s topics=%s before=%s after=%s",
+                pipeline.name, removed_by_topics, removed_ids[:5], list(recent_topics)[:5], before, len(candidates),
+            )
+        else:
+            logger.info(
+                "discussion_filter pipeline=%s reason=recent_topics removed=%s msg_ids=%s topics=%s before=%s after=0 (skip repeat)",
+                pipeline.name, removed_by_topics, removed_ids[:5], list(recent_topics)[:5], before,
+            )
 
     fp_ring_size = getattr(config, "DISCUSSION_FINGERPRINT_RING_SIZE", 10)
     seen_fps = set(_load_recent_fingerprints(state))
     if seen_fps and len(candidates) > 1:
         before = len(candidates)
         filtered_fp = [c for c in candidates if topic_fingerprint(c.text) not in seen_fps]
+        removed = [c for c in candidates if c not in filtered_fp]
+        removed_ids = [c.message_id for c in removed]
+        removed_fps = [topic_fingerprint(c.text) for c in removed]
         candidates = filtered_fp
         if filtered_fp:
-            logger.info("discussion_filter pipeline=%s reason=fingerprint_seen before=%s after=%s", pipeline.name, before, len(candidates))
+            removed_by_fingerprint = before - len(candidates)
+            logger.info(
+                "discussion_filter pipeline=%s reason=fingerprint_seen removed=%s msg_ids=%s fps_sample=%s before=%s after=%s",
+                pipeline.name, removed_by_fingerprint, removed_ids[:5], removed_fps[:3], before, len(candidates),
+            )
         else:
-            logger.info("discussion_filter pipeline=%s reason=fingerprint_seen before=%s after=0 (skip repeat)", pipeline.name, before)
+            removed_by_fingerprint = before
+            logger.info(
+                "discussion_filter pipeline=%s reason=fingerprint_seen removed=%s msg_ids=%s fps_sample=%s before=%s after=0 (skip repeat)",
+                pipeline.name, removed_by_fingerprint, removed_ids[:5], removed_fps[:3], before,
+            )
 
     bm25_window = getattr(config, "DEDUP_WINDOW_SIZE", 30)
     bm25_threshold = getattr(config, "DEDUP_BM25_THRESHOLD", 7.0)
@@ -1282,16 +1312,29 @@ async def _process_discussion_pipeline(
             c for c in candidates
             if not _is_similar_news_bm25(session, source_pipeline.id, c.text, bm25_window, bm25_threshold)
         ]
+        removed = [c for c in candidates if c not in filtered_bm25]
+        removed_ids = [c.message_id for c in removed]
         candidates = filtered_bm25
         if filtered_bm25:
-            logger.info("discussion_filter pipeline=%s reason=bm25_similar before=%s after=%s", pipeline.name, before, len(candidates))
+            removed_by_bm25 = before - len(candidates)
+            logger.info(
+                "discussion_filter pipeline=%s reason=bm25_similar removed=%s msg_ids=%s threshold=%s before=%s after=%s",
+                pipeline.name, removed_by_bm25, removed_ids[:5], bm25_threshold, before, len(candidates),
+            )
         else:
-            logger.info("discussion_filter pipeline=%s reason=bm25_similar before=%s after=0 (skip repeat)", pipeline.name, before)
+            removed_by_bm25 = before
+            logger.info(
+                "discussion_filter pipeline=%s reason=bm25_similar removed=%s msg_ids=%s threshold=%s before=%s after=0 (skip repeat)",
+                pipeline.name, removed_by_bm25, removed_ids[:5], bm25_threshold, before,
+            )
 
     if not candidates:
         logger.info(
-            "discussion skipped: all candidates filtered (already discussed) (pipeline=%s)",
+            "discussion skipped: all candidates filtered (already discussed) (pipeline=%s) "
+            "removed_by_last_post=%s removed_by_topics=%s removed_by_fingerprint=%s removed_by_bm25=%s total_start=%s",
             pipeline.name,
+            removed_by_last_post, removed_by_topics, removed_by_fingerprint, removed_by_bm25,
+            len(candidates_all),
         )
         _update_pipeline_status(
             pipeline,
