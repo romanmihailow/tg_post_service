@@ -129,8 +129,8 @@ _REACTION_BORING_KEYWORDS = frozenset(
     ]
 )
 
-# P1: Female grammar fix (imported from female_grammar_fix).
-from project_root.female_grammar_fix import fix_female_grammar_in_reply
+# P1/P2: Gender grammar fix (male/female forms).
+from project_root.grammar_fix import fix_gender_grammar
 
 
 def _update_pipeline_status(
@@ -1465,16 +1465,16 @@ async def _process_discussion_pipeline(
         # Planned chain for a single question; still keep persona roles per order.
         account_name = selected_bots[idx - 1].account_name
         _, persona_meta = _build_persona_prompt_and_meta(session, account_name)
-        if persona_meta.get("gender") == "female":
-            before = reply_text
-            reply_text = fix_female_grammar_in_reply(reply_text)
-            if reply_text != before and logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "female_grammar_fix applied account=%s before=%r after=%r",
-                    account_name,
-                    before,
-                    reply_text,
-                )
+        gender = persona_meta.get("gender", "male")
+        before = reply_text
+        reply_text, changed = fix_gender_grammar(reply_text, gender)
+        if changed and logger.isEnabledFor(logging.DEBUG):
+            b = (before[:120] + "…") if len(before) > 120 else before
+            a = (reply_text[:120] + "…") if len(reply_text) > 120 else reply_text
+            logger.debug(
+                "gender_grammar_fix applied pipeline=p1 account=%s gender=%s before=%s after=%s",
+                account_name, gender, b, a,
+            )
         base_delay = _reply_delay_minutes(idx)
         adjusted_delay = max(1, int(round(base_delay * delay_factor)))
         send_at = now + timedelta(minutes=adjusted_delay)
@@ -1888,7 +1888,15 @@ def _build_persona_prompt_and_meta(
     )
     profile = PERSONA_PROFILE_OVERRIDES.get(account_name, {})
     display_name = profile.get("display_name", account_name)
-    gender = profile.get("gender", "male")
+    gender_raw = profile.get("gender", "male")
+    gender = str(gender_raw).strip().lower() if gender_raw else "male"
+    if gender not in {"male", "female"}:
+        logger.warning(
+            "persona gender invalid account=%s raw=%r skipping grammar fix",
+            account_name,
+            gender_raw,
+        )
+        gender = "unknown"
     if gender == "female":
         grammar = (
             "пиши от первого лица в женском роде. "
@@ -2568,16 +2576,16 @@ async def _plan_user_reply_for_candidate(
             continue
         if not reply_text:
             continue
-        if persona_meta.get("gender") == "female":
-            before = reply_text
-            reply_text = fix_female_grammar_in_reply(reply_text)
-            if reply_text != before and logger.isEnabledFor(logging.DEBUG):
-                logger.debug(
-                    "female_grammar_fix applied account=%s before=%r after=%r",
-                    bot_weight.account_name,
-                    before,
-                    reply_text,
-                )
+        gender = persona_meta.get("gender", "male")
+        before = reply_text
+        reply_text, changed = fix_gender_grammar(reply_text, gender)
+        if changed and logger.isEnabledFor(logging.DEBUG):
+            b = (before[:120] + "…") if len(before) > 120 else before
+            a = (reply_text[:120] + "…") if len(reply_text) > 120 else reply_text
+            logger.debug(
+                "gender_grammar_fix applied pipeline=p2 account=%s gender=%s before=%s after=%s",
+                bot_weight.account_name, gender, b, a,
+            )
         send_at = first_send_at if idx == 1 else second_send_at
         create_discussion_reply(
             session,
