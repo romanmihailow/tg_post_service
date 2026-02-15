@@ -1083,6 +1083,13 @@ async def _process_pipeline_once(
     source.last_message_id = message.id
     channel_message_id = getattr(sent_msg, "id", None) if sent_msg else None
     destination_channel = pipeline.destination_channel
+    logger.info(
+        "Posted to pipeline=%s destination=%s source=%s msg_id=%s",
+        pipeline.name,
+        destination_channel,
+        source.source_channel,
+        message.id,
+    )
     if channel_message_id is None and original_text:
         logger.warning(
             "post_history channel_message_id missing pipeline=%s destination=%s (sent_msg not available)",
