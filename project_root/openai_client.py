@@ -68,6 +68,8 @@ class OpenAIClient:
         self,
         candidates: list[str],
         *,
+        recent_topics: list[str] | None = None,
+        recent_fingerprints: list[str] | None = None,
         pipeline_id: int | None = None,
         chat_id: str | None = None,
         extra: dict[str, Any] | None = None,
@@ -78,10 +80,18 @@ class OpenAIClient:
         enumerated = "\n".join(
             f"{idx + 1}. {text}" for idx, text in enumerate(candidates)
         )
+        avoid_hint = ""
+        if recent_topics:
+            topics_str = ", ".join(recent_topics[:10])
+            avoid_hint = (
+                f"\nИзбегай тем, которые уже обсуждали недавно: {topics_str}. "
+                "Выбирай максимально отличающуюся тему среди кандидатов.\n"
+            )
         prompt = (
             "Выбери одну новость, которая лучше всего подходит для обсуждения.\n"
             "Верни JSON строго такого вида: {\"index\": N}\n"
-            "Где N — номер новости в списке (1-based).\n\n"
+            "Где N — номер новости в списке (1-based).\n"
+            f"{avoid_hint}\n"
             f"{enumerated}"
         )
         text, in_tokens, out_tokens, total_tokens = self._with_retries(

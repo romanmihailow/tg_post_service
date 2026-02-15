@@ -272,6 +272,9 @@ class Config(BaseSettings):
     DEDUP_ENABLED: bool = Field(default=True)
     DEDUP_WINDOW_SIZE: int = Field(default=30)
     DEDUP_BM25_THRESHOLD: float = Field(default=7.0)
+
+    # Pipeline 1 Discussion anti-repeat (fingerprint ring buffer)
+    DISCUSSION_FINGERPRINT_RING_SIZE: int = Field(default=10)
     AD_FILTER_ENABLED: bool = Field(default=False)
     AD_FILTER_THRESHOLD: int = Field(default=3)
     AD_FILTER_KEYWORDS: Optional[str] = Field(default=None)

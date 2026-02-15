@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -735,30 +736,89 @@ async def _try_set_admin_reaction_on_source_post(
         )
 
 
-def _load_recent_topics(state: DiscussionState) -> list[str]:
-    raw = (state.recent_topics_json or "").strip()
-    if not raw:
-        return []
+def normalize_text_for_fingerprint(text: str) -> str:
+    """Normalize text for fingerprint: lowercase, no URLs, @user, #tag, digits->0, collapse spaces."""
+    if not text or not isinstance(text, str):
+        return ""
+    s = text.strip().lower()
+    s = re.sub(r"https?://\S+", " ", s)
+    s = re.sub(r"@\w+", " ", s)
+    s = re.sub(r"#\w+", " ", s)
+    s = re.sub(r"\d+", "0", s)
+    s = re.sub(r"\s+", " ", s).strip()
+    return s[:800] if len(s) > 800 else s
+
+
+def topic_fingerprint(text: str) -> str:
+    """Stable hash of normalized text for anti-repeat."""
+    norm = normalize_text_for_fingerprint(text)
+    return hashlib.sha256(norm.encode("utf-8")).hexdigest()[:16]
+
+
+def _parse_discussion_state_topics_json(raw: str | None) -> tuple[list[str], list[str]]:
+    """Parse recent_topics_json. Returns (topics, fingerprints). Backward compat: list -> topics, fingerprints=[]."""
+    topics: list[str] = []
+    fingerprints: list[str] = []
+    s = (raw or "").strip()
+    if not s:
+        return (topics, fingerprints)
     try:
-        data = json.loads(raw)
+        data = json.loads(s)
     except json.JSONDecodeError:
-        return []
-    if not isinstance(data, list):
-        return []
-    return [str(item).strip().lower() for item in data if str(item).strip()]
+        return (topics, fingerprints)
+    if isinstance(data, list):
+        topics = [str(x).strip().lower() for x in data if str(x).strip()]
+        return (topics, fingerprints)
+    if isinstance(data, dict):
+        raw_topics = data.get("topics")
+        if isinstance(raw_topics, list):
+            topics = [str(x).strip().lower() for x in raw_topics if str(x).strip()]
+        raw_fps = data.get("fingerprints")
+        if isinstance(raw_fps, list):
+            fingerprints = [str(x).strip() for x in raw_fps if str(x).strip() and len(str(x)) <= 32]
+    return (topics, fingerprints)
 
 
-def _update_recent_topics(state: DiscussionState, topics: list[str]) -> None:
+def _save_discussion_state_topics_json(
+    topics: list[str], fingerprints: list[str], topics_limit: int = 3, fp_limit: int = 10
+) -> str:
+    """Save topics + fingerprints as JSON object."""
+    t = [x for x in topics[:topics_limit] if x]
+    f = fingerprints[-fp_limit:] if len(fingerprints) > fp_limit else fingerprints
+    return json.dumps({"topics": t, "fingerprints": f}, ensure_ascii=False)
+
+
+def _load_recent_topics(state: DiscussionState) -> list[str]:
+    topics, _ = _parse_discussion_state_topics_json(state.recent_topics_json)
+    return topics
+
+
+def _load_recent_fingerprints(state: DiscussionState) -> list[str]:
+    _, fps = _parse_discussion_state_topics_json(state.recent_topics_json)
+    return fps
+
+
+def _update_recent_topics(
+    state: DiscussionState,
+    topics: list[str],
+    add_fingerprint: str | None = None,
+    fingerprint_ring_size: int = 10,
+) -> None:
     normalized = [item.strip().lower() for item in topics if item and item.strip()]
-    if not normalized:
-        return
-    current = _load_recent_topics(state)
+    current_topics, current_fps = _parse_discussion_state_topics_json(state.recent_topics_json)
     for topic in normalized:
-        if topic in current:
-            current.remove(topic)
-        current.insert(0, topic)
-    state.recent_topics_json = json.dumps(
-        current[:_DISCUSSION_RECENT_TOPICS_LIMIT], ensure_ascii=False
+        if topic in current_topics:
+            current_topics.remove(topic)
+        current_topics.insert(0, topic)
+    topics_out = current_topics[:_DISCUSSION_RECENT_TOPICS_LIMIT]
+    fps_out = list(current_fps)
+    if add_fingerprint and add_fingerprint.strip():
+        fps_out.append(add_fingerprint.strip())
+        fps_out = fps_out[-fingerprint_ring_size:]
+    if not normalized and not (add_fingerprint and add_fingerprint.strip()):
+        return
+    state.recent_topics_json = _save_discussion_state_topics_json(
+        topics_out, fps_out, topics_limit=_DISCUSSION_RECENT_TOPICS_LIMIT, fp_limit=fingerprint_ring_size
     )
 
 
@@ -1180,24 +1240,54 @@ async def _process_discussion_pipeline(
             message="no candidate posts",
         )
         return sent_any
+    logger.info("discussion_candidates pipeline=%s total=%s", pipeline.name, len(candidates_all))
     candidates = candidates_all
+
     if state.last_source_post_id and len(candidates_all) > 1:
+        before = len(candidates)
         filtered = [
             item for item in candidates_all if item.message_id != state.last_source_post_id
         ]
         if filtered:
             candidates = filtered
+            logger.info("discussion_filter pipeline=%s reason=last_post_id before=%s after=%s", pipeline.name, before, len(candidates))
+
     recent_topics = set(_load_recent_topics(state))
     if recent_topics and len(candidates) > 1:
-        candidates_with_topics = []
-        filtered_by_topics = []
-        for item in candidates:
-            topics = extract_topics_for_text(item.text)
-            candidates_with_topics.append((item, topics))
-            if not recent_topics.intersection({t.lower() for t in topics}):
-                filtered_by_topics.append(item)
+        before = len(candidates)
+        filtered_by_topics = [
+            item for item in candidates
+            if not recent_topics.intersection({t.lower() for t in extract_topics_for_text(item.text)})
+        ]
         if filtered_by_topics:
             candidates = filtered_by_topics
+            logger.info("discussion_filter pipeline=%s reason=recent_topics before=%s after=%s", pipeline.name, before, len(candidates))
+
+    fp_ring_size = getattr(config, "DISCUSSION_FINGERPRINT_RING_SIZE", 10)
+    seen_fps = set(_load_recent_fingerprints(state))
+    if seen_fps and len(candidates) > 1:
+        before = len(candidates)
+        filtered_fp = [c for c in candidates if topic_fingerprint(c.text) not in seen_fps]
+        if filtered_fp:
+            candidates = filtered_fp
+            logger.info("discussion_filter pipeline=%s reason=fingerprint_seen before=%s after=%s", pipeline.name, before, len(candidates))
+        else:
+            logger.info("discussion_filter_fallback pipeline=%s reason=fingerprint kept=%s", pipeline.name, before)
+
+    bm25_window = getattr(config, "DEDUP_WINDOW_SIZE", 30)
+    bm25_threshold = getattr(config, "DEDUP_BM25_THRESHOLD", 7.0)
+    if bm25_window > 0 and len(candidates) > 1:
+        before = len(candidates)
+        filtered_bm25 = []
+        for c in candidates:
+            if not _is_similar_news_bm25(session, source_pipeline.id, c.text, bm25_window, bm25_threshold):
+                filtered_bm25.append(c)
+        if filtered_bm25:
+            candidates = filtered_bm25
+            logger.info("discussion_filter pipeline=%s reason=bm25_similar before=%s after=%s", pipeline.name, before, len(candidates))
+        else:
+            logger.info("discussion_filter_fallback pipeline=%s reason=bm25 kept=%s", pipeline.name, before)
+
     _update_pipeline_status(
         pipeline,
         category="pipeline1",
@@ -1216,9 +1306,11 @@ async def _process_discussion_pipeline(
             progress_total=k,
             message="selecting best post",
         )
+        recent_topics_list = list(recent_topics)
         selected_index, in_t, out_t, total_t = await asyncio.to_thread(
             primary_account.openai_client.select_discussion_news,
             candidate_texts,
+            recent_topics=recent_topics_list,
             pipeline_id=pipeline.id,
             chat_id=settings.target_chat,
             extra={"source": "pipeline1"},
@@ -1236,6 +1328,12 @@ async def _process_discussion_pipeline(
         selected_index = 1
     selected_item = candidates[selected_index - 1]
     news_text = candidate_texts[selected_index - 1]
+    sel_fp = topic_fingerprint(news_text)
+    title_snippet = (news_text[:60] + "...") if len(news_text) > 60 else news_text
+    logger.info(
+        "discussion_selected pipeline=%s msg_id=%s fp=%s idx=%s title_snippet=%s",
+        pipeline.name, selected_item.message_id, sel_fp, selected_index, title_snippet,
+    )
     replies_count = random.choices([1, 2, 3], weights=[60, 30, 10])[0]
     available_weights = _ensure_discussion_weights(
         session, pipeline.id, accounts, exclude_account=primary_account.name
@@ -1350,7 +1448,12 @@ async def _process_discussion_pipeline(
     state.question_created_at = now
     state.last_source_post_id = selected_item.message_id
     state.last_source_post_at = _as_utc(selected_item.created_at) if selected_item.created_at else now
-    _update_recent_topics(state, extract_topics_for_text(news_text))
+    _update_recent_topics(
+        state,
+        extract_topics_for_text(news_text),
+        add_fingerprint=sel_fp,
+        fingerprint_ring_size=fp_ring_size,
+    )
     state.expires_at = now + timedelta(minutes=60)
     state.replies_planned = len(replies)
     state.replies_sent = 0
