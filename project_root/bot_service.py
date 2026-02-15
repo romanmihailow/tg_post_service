@@ -49,6 +49,7 @@ from project_root.db import (
     get_userbot_persona,
     mark_invite_code_used,
     mark_invite_used,
+    update_discussion_activity_windows,
     update_discussion_inactivity_pause,
     update_discussion_intervals,
     update_pipeline_destination,
@@ -278,6 +279,7 @@ def _pipeline_menu_keyboard(
         rows.append(["Режим", "Интервал"])
         if is_discussion:
             rows.append(["Интервал обсуждений", "Пауза при тишине"])
+            rows.append(["Окна активности"])
         rows.append(["Вкл/выкл"])
     if can_delete:
         rows.append(["Удалить пайплайн"])
@@ -342,6 +344,37 @@ def _parse_minutes_input(value: str) -> int | None:
         return int(match.group())
     except ValueError:
         return None
+
+
+ACTIVITY_WINDOWS_PRESETS: dict[str, str | None] = {
+    "Выкл": None,
+    "8–23": '[["08:00","23:00"]]',
+    "9–22": '[["09:00","22:00"]]',
+    "10–21": '[["10:00","21:00"]]',
+    "12–20": '[["12:00","20:00"]]',
+}
+
+
+def _activity_windows_keyboard(
+    current_weekdays: str | None, current_weekends: str | None
+) -> ReplyKeyboardMarkup:
+    """Keyboard for activity windows presets. current = JSON string or None."""
+    options = ["Выкл", "8–23", "9–22", "10–21", "12–20", "Вручную"]
+    row = []
+    current_matches = None
+    if current_weekdays == current_weekends:
+        for label, json_val in ACTIVITY_WINDOWS_PRESETS.items():
+            if (json_val is None and current_weekdays is None) or (
+                json_val is not None and current_weekdays == json_val
+            ):
+                current_matches = label
+                break
+    for option in options:
+        if option == current_matches:
+            row.append(f"{option} ✓")
+        else:
+            row.append(option)
+    return ReplyKeyboardMarkup([row, ["Назад", "Меню", "Статус"]], resize_keyboard=True)
 
 
 def _activity_level_keyboard(current_percent: int | None = None) -> ReplyKeyboardMarkup:
@@ -1467,6 +1500,37 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
                 "Введите 0 (выкл) или минуты (например: 60):"
             )
             return
+        if text == "Окна активности":
+            if not _has_permission(config, user_id, "edit"):
+                await update.message.reply_text("Недостаточно прав.")
+                return
+            with get_session() as session:
+                pipeline_obj = get_pipeline_by_name(session, pipeline_name)
+                if not pipeline_obj or pipeline_obj.pipeline_type != "DISCUSSION":
+                    await update.message.reply_text(
+                        "Доступно только для пайплайнов типа Обсуждение."
+                    )
+                    return
+                settings = get_discussion_settings(session, pipeline_obj.id)
+                if not settings:
+                    await update.message.reply_text(
+                        "Настройки обсуждения не найдены."
+                    )
+                    return
+            current_wd = settings.activity_windows_weekdays_json
+            current_we = settings.activity_windows_weekends_json
+            label = "выкл (круглосуточно)" if not current_wd else current_wd
+            await update.message.reply_text(
+                f"⚙️ Окна активности (время по Москве)\n"
+                f"Текущие: {label}\n"
+                f"Постинг только в указанные часы."
+            )
+            context.user_data["awaiting"] = {"type": "pipeline_discussion_activity_windows"}
+            await update.message.reply_text(
+                "Выберите пресет или Вручную:",
+                reply_markup=_activity_windows_keyboard(current_wd, current_we),
+            )
+            return
         if text == "Режим":
             if not _has_permission(config, user_id, "edit"):
                 await update.message.reply_text("Недостаточно прав.")
@@ -1979,6 +2043,12 @@ async def _handle_awaiting(
     if awaiting.get("type") == "pipeline_discussion_inactivity":
         await _update_discussion_inactivity_pause(update, context, text)
         return True
+    if awaiting.get("type") == "pipeline_discussion_activity_windows":
+        handled = await _handle_discussion_activity_windows(update, context, text)
+        return handled
+    if awaiting.get("type") == "pipeline_discussion_activity_windows_manual":
+        await _update_discussion_activity_windows_manual(update, context, text)
+        return True
     if awaiting.get("type") == "pipeline_delete":
         await _update_pipeline_delete(update, context, text)
         return True
@@ -2458,6 +2528,98 @@ async def _update_discussion_inactivity_pause(
         f"{pipeline_name} -> {label}",
     )
     await update.message.reply_text(f"✅ Пауза при тишине: {label}")
+
+
+async def _handle_discussion_activity_windows(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> bool:
+    """Handle preset selection or route to manual input."""
+    cleaned = text.strip().replace(" ✓", "")
+    if cleaned == "Вручную":
+        context.user_data["awaiting"] = {
+            "type": "pipeline_discussion_activity_windows_manual"
+        }
+        await update.message.reply_text(
+            "Введите окно в формате HH:MM HH:MM (например: 09:00 22:00). Время по Москве."
+        )
+        return True
+    if cleaned in ACTIVITY_WINDOWS_PRESETS:
+        json_val = ACTIVITY_WINDOWS_PRESETS[cleaned]
+        await _apply_discussion_activity_windows(update, context, json_val)
+        return True
+    await update.message.reply_text("Выберите пресет с кнопок.")
+    return True
+
+
+async def _apply_discussion_activity_windows(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+    weekdays_json: str | None,
+    weekends_json: str | None = None,
+) -> None:
+    """Apply activity windows (same value to both if weekends_json not provided)."""
+    context.user_data.pop("awaiting", None)
+    if weekends_json is None:
+        weekends_json = weekdays_json
+    pipeline_name = context.user_data.get("pipeline")
+    if not pipeline_name:
+        await update.message.reply_text("Пайплайн не выбран.")
+        return
+    with get_session() as session:
+        pipeline = get_pipeline_by_name(session, pipeline_name)
+        if not pipeline or pipeline.pipeline_type != "DISCUSSION":
+            await update.message.reply_text("Пайплайн не найден или не типа Обсуждение.")
+            return
+        try:
+            update_discussion_activity_windows(
+                session,
+                pipeline.id,
+                activity_windows_weekdays_json=weekdays_json,
+                activity_windows_weekends_json=weekends_json,
+            )
+            session.commit()
+        except ValueError as e:
+            await update.message.reply_text(str(e))
+            return
+    if weekdays_json is None:
+        label = "выкл (круглосуточно)"
+    else:
+        try:
+            data = json.loads(weekdays_json)
+            if data and data[0]:
+                label = f"{data[0][0]}–{data[0][1]}"
+            else:
+                label = weekdays_json
+        except Exception:
+            label = weekdays_json
+    _audit_log(
+        "pipeline.discussion_activity_windows",
+        context.user_data.get("user_id"),
+        f"{pipeline_name} -> {label}",
+    )
+    await update.message.reply_text(f"✅ Окна активности: {label}")
+
+
+async def _update_discussion_activity_windows_manual(
+    update: Update, context: ContextTypes.DEFAULT_TYPE, text: str
+) -> None:
+    """Parse HH:MM HH:MM and apply to activity windows."""
+    context.user_data.pop("awaiting", None)
+    parts = text.strip().split()
+    if len(parts) != 2:
+        await update.message.reply_text(
+            "Введите два времени через пробел: HH:MM HH:MM (например: 09:00 22:00)"
+        )
+        return
+    start, end = parts[0], parts[1]
+    try:
+        datetime.strptime(start, "%H:%M")
+        datetime.strptime(end, "%H:%M")
+    except ValueError:
+        await update.message.reply_text("Формат: HH:MM (например 09:00)")
+        return
+    json_val = json.dumps([[start, end]])
+    await _apply_discussion_activity_windows(update, context, json_val)
 
 
 async def _update_pipeline_delete(

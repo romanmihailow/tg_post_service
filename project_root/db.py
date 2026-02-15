@@ -770,6 +770,21 @@ def update_discussion_inactivity_pause(
     settings.inactivity_pause_minutes = inactivity_pause_minutes
 
 
+def update_discussion_activity_windows(
+    session: Session,
+    pipeline_id: int,
+    *,
+    activity_windows_weekdays_json: str | None,
+    activity_windows_weekends_json: str | None,
+) -> None:
+    """Update activity windows for a discussion pipeline. None = disabled (anytime)."""
+    settings = session.get(DiscussionSettings, pipeline_id)
+    if settings is None:
+        raise ValueError("Discussion settings not found for pipeline")
+    settings.activity_windows_weekdays_json = activity_windows_weekdays_json
+    settings.activity_windows_weekends_json = activity_windows_weekends_json
+
+
 def update_pipeline_mode(session: Session, pipeline: Pipeline, mode: str) -> None:
     pipeline.posting_mode = mode
 
