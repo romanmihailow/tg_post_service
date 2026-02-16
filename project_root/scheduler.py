@@ -1273,6 +1273,10 @@ async def _process_discussion_pipeline(
                 pipeline.name, removed_by_last_post, removed_ids, before, len(candidates),
             )
 
+    # Keep reference to newest post so we can preserve it through topic/fingerprint/bm25 filters
+    # (so the just-published post can get discussion and reactions).
+    newest_candidate = candidates[0] if candidates else None
+
     recent_topics = set(_load_recent_topics(state))
     if recent_topics and len(candidates) > 1:
         before = len(candidates)
@@ -1280,11 +1284,10 @@ async def _process_discussion_pipeline(
             item for item in candidates
             if not recent_topics.intersection({t.lower() for t in extract_topics_for_text(item.text)})
         ]
-        # Always keep the newest post (candidates[0]) as a candidate so the just-published post
+        # Always keep the newest post as a candidate so the just-published post
         # can get discussion and reactions even when its topics overlap with recent ones.
-        newest = candidates[0]
-        if newest not in filtered_by_topics:
-            filtered_by_topics = [newest] + [c for c in filtered_by_topics if c != newest]
+        if newest_candidate and newest_candidate not in filtered_by_topics:
+            filtered_by_topics = [newest_candidate] + [c for c in filtered_by_topics if c != newest_candidate]
         removed_ids = [c.message_id for c in candidates if c not in filtered_by_topics]
         candidates = filtered_by_topics
         removed_by_topics = before - len(candidates)
@@ -1304,6 +1307,8 @@ async def _process_discussion_pipeline(
     if seen_fps and len(candidates) > 1:
         before = len(candidates)
         filtered_fp = [c for c in candidates if topic_fingerprint(c.text) not in seen_fps]
+        if newest_candidate and newest_candidate not in filtered_fp:
+            filtered_fp = [newest_candidate] + [c for c in filtered_fp if c != newest_candidate]
         removed = [c for c in candidates if c not in filtered_fp]
         removed_ids = [c.message_id for c in removed]
         removed_fps = [topic_fingerprint(c.text) for c in removed]
@@ -1335,6 +1340,8 @@ async def _process_discussion_pipeline(
                 filtered_bm25.append(c)
             else:
                 removed_with_scores.append((c.message_id, max_score))
+        if newest_candidate and newest_candidate not in filtered_bm25:
+            filtered_bm25 = [newest_candidate] + [c for c in filtered_bm25 if c != newest_candidate]
         removed = [c for c in candidates if c not in filtered_bm25]
         removed_ids = [c.message_id for c in removed]
         candidates = filtered_bm25
