@@ -1280,6 +1280,11 @@ async def _process_discussion_pipeline(
             item for item in candidates
             if not recent_topics.intersection({t.lower() for t in extract_topics_for_text(item.text)})
         ]
+        # Always keep the newest post (candidates[0]) as a candidate so the just-published post
+        # can get discussion and reactions even when its topics overlap with recent ones.
+        newest = candidates[0]
+        if newest not in filtered_by_topics:
+            filtered_by_topics = [newest] + [c for c in filtered_by_topics if c != newest]
         removed_ids = [c.message_id for c in candidates if c not in filtered_by_topics]
         candidates = filtered_by_topics
         removed_by_topics = before - len(candidates)
