@@ -19,6 +19,8 @@ def main() -> None:
     assert fix_gender_grammar("Уверен, что да", "female") == ("Уверена, что да", True)
     assert fix_gender_grammar("Прав, конечно", "female") == ("Права, конечно", True)
     assert fix_gender_grammar("готов помочь", "female") == ("готова помочь", True)
+    assert fix_gender_grammar("Не удивлён, сейчас сезон.", "female") == ("Не удивлена, сейчас сезон.", True)
+    assert fix_gender_grammar("Не удивлена, это нормально.", "male") == ("Не удивлён, это нормально.", True)
 
     # Invalid gender: text unchanged, changed=False
     out, changed = fix_gender_grammar("Не уверена.", "unknown")
