@@ -1032,6 +1032,7 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             return
 
     if text in {"Меню", "Главное меню"}:
+        context.user_data.pop("awaiting", None)
         await _set_menu(
             update,
             context,
@@ -1046,9 +1047,11 @@ async def _handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
     if text == "Статус":
+        context.user_data.pop("awaiting", None)
         await _status_cmd(update, context)
         return
     if text == "Назад":
+        context.user_data.pop("awaiting", None)
         await _go_back(update, context)
         return
 
@@ -2019,6 +2022,70 @@ async def _handle_awaiting(
     awaiting: dict,
     text: str,
 ) -> bool:
+    config: Config = context.bot_data["config"]
+    user_id = context.user_data.get("user_id")
+    # Выход из любого ожидания по кнопкам верхнего уровня (чтобы не застревать в «Выберите пресет с кнопок»).
+    escape_actions = {
+        "Аккаунты": ("accounts", None),
+        "Пайплайны": ("pipelines", None),
+        "Поведение": ("behavior", None),
+        "Промпты": ("prompts", None),
+        "Логи": ("logs", None),
+        "Справка": ("help", None),
+    }
+    cleaned = text.strip()
+    if cleaned in escape_actions:
+        context.user_data.pop("awaiting", None)
+        action = escape_actions[cleaned][0]
+        if action == "accounts" and _has_permission(config, user_id, "view"):
+            accounts = [
+                item.name
+                for item in config.telegram_accounts()
+                if _can_access_account(config, user_id, item.name)
+            ]
+            await _set_menu(
+                update, context, MENU_ACCOUNTS, "",
+                _account_list_keyboard(accounts),
+            )
+            return True
+        if action == "pipelines" and _has_permission(config, user_id, "view"):
+            await _set_menu(
+                update, context, MENU_PIPELINES, "",
+                _pipelines_list_keyboard(
+                    _list_pipeline_names(user_id=user_id, config=config),
+                    can_create=_has_permission(config, user_id, "create"),
+                ),
+            )
+            return True
+        if action == "behavior" and _has_permission(config, user_id, "behavior"):
+            account_name = context.user_data.get("account")
+            if account_name:
+                await _set_menu(
+                    update, context, MENU_BEHAVIOR, "",
+                    _behavior_menu_keyboard(),
+                )
+                return True
+        if action == "logs" and _has_permission(config, user_id, "logs"):
+            await _set_menu(
+                update, context, MENU_LOGS, "",
+                _logs_menu_keyboard(can_view=True),
+            )
+            return True
+        if action == "help":
+            await update.message.reply_text("ℹ️ Справка")
+            return True
+        # Иначе вернуть в главное меню
+        await _set_menu(
+            update, context, MENU_MAIN, "",
+            _main_menu_keyboard(
+                config,
+                user_id=user_id,
+                has_account=bool(context.user_data.get("account")),
+                has_pipeline=bool(context.user_data.get("pipeline")),
+            ),
+        )
+        return True
+
     if awaiting.get("type") == "pipeline_destination":
         await _update_pipeline_destination(update, context, text)
         return True
