@@ -11,7 +11,7 @@ from typing import Tuple
 VALID_GENDERS = frozenset({"male", "female"})
 PREFIX_CHARS = 80
 
-# Female context: male→female forms. Order: "не …" first, then single words.
+# Female context: male→female forms. Order: "не …", "бы …" first, then single words.
 _FEMALE_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bне\s+согласен\b"), "не согласна"),
     (re.compile(r"\bНе\s+согласен\b"), "Не согласна"),
@@ -21,6 +21,27 @@ _FEMALE_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bНе\s+удивлён\b"), "Не удивлена"),
     (re.compile(r"\bне\s+удивлен\b"), "не удивлена"),
     (re.compile(r"\bНе\s+удивлен\b"), "Не удивлена"),
+    (re.compile(r"\bбы\s+сказал\b"), "бы сказала"),
+    (re.compile(r"\bБы\s+сказал\b"), "Бы сказала"),
+    (re.compile(r"\bбы\s+уточнил\b"), "бы уточнила"),
+    (re.compile(r"\bбы\s+поспорил\b"), "бы поспорила"),
+    (re.compile(r"\bбы\s+добавил\b"), "бы добавила"),
+    (re.compile(r"\bбы\s+отметил\b"), "бы отметила"),
+    (re.compile(r"\bбы\s+подумал\b"), "бы подумала"),
+    (re.compile(r"\bбы\s+считал\b"), "бы считала"),
+    (re.compile(r"\bбы\s+хотел\b"), "бы хотела"),
+    (re.compile(r"\bбы\s+сделал\b"), "бы сделала"),
+    (re.compile(r"\bбы\s+решил\b"), "бы решила"),
+    (re.compile(r"\bбы\s+написал\b"), "бы написала"),
+    (re.compile(r"\bбы\s+ответил\b"), "бы ответила"),
+    (re.compile(r"\bбы\s+согласился\b"), "бы согласилась"),
+    (re.compile(r"\bбы\s+думал\b"), "бы думала"),
+    (re.compile(r"\bСказал\s+бы\b"), "Сказала бы"),
+    (re.compile(r"\bсказал\s+бы\b"), "сказала бы"),
+    (re.compile(r"\bУточнил\s+бы\b"), "Уточнила бы"),
+    (re.compile(r"\bПоспорил\s+бы\b"), "Поспорила бы"),
+    (re.compile(r"\bДобавил\s+бы\b"), "Добавила бы"),
+    (re.compile(r"\bПодумал\s+бы\b"), "Подумала бы"),
     (re.compile(r"\bсогласен\b"), "согласна"),
     (re.compile(r"\bСогласен\b"), "Согласна"),
     (re.compile(r"\bуверен\b"), "уверена"),
@@ -35,7 +56,7 @@ _FEMALE_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bПрав\b"), "Права"),
 ]
 
-# Male context: female→male forms. Order: "не …" first, then single words.
+# Male context: female→male forms. Order: "не …", "бы …" first, then single words.
 _MALE_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bне\s+согласна\b"), "не согласен"),
     (re.compile(r"\bНе\s+согласна\b"), "Не согласен"),
@@ -43,6 +64,26 @@ _MALE_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bНе\s+уверена\b"), "Не уверен"),
     (re.compile(r"\bне\s+удивлена\b"), "не удивлён"),
     (re.compile(r"\bНе\s+удивлена\b"), "Не удивлён"),
+    (re.compile(r"\bбы\s+сказала\b"), "бы сказал"),
+    (re.compile(r"\bбы\s+уточнила\b"), "бы уточнил"),
+    (re.compile(r"\bбы\s+поспорила\b"), "бы поспорил"),
+    (re.compile(r"\bбы\s+добавила\b"), "бы добавил"),
+    (re.compile(r"\bбы\s+отметила\b"), "бы отметил"),
+    (re.compile(r"\bбы\s+подумала\b"), "бы подумал"),
+    (re.compile(r"\bбы\s+считала\b"), "бы считал"),
+    (re.compile(r"\bбы\s+хотела\b"), "бы хотел"),
+    (re.compile(r"\bбы\s+сделала\b"), "бы сделал"),
+    (re.compile(r"\bбы\s+решила\b"), "бы решил"),
+    (re.compile(r"\bбы\s+написала\b"), "бы написал"),
+    (re.compile(r"\bбы\s+ответила\b"), "бы ответил"),
+    (re.compile(r"\bбы\s+согласилась\b"), "бы согласился"),
+    (re.compile(r"\bбы\s+думала\b"), "бы думал"),
+    (re.compile(r"\bСказала\s+бы\b"), "Сказал бы"),
+    (re.compile(r"\bсказала\s+бы\b"), "сказал бы"),
+    (re.compile(r"\bУточнила\s+бы\b"), "Уточнил бы"),
+    (re.compile(r"\bПоспорила\s+бы\b"), "Поспорил бы"),
+    (re.compile(r"\bДобавила\s+бы\b"), "Добавил бы"),
+    (re.compile(r"\bПодумала\s+бы\b"), "Подумал бы"),
     (re.compile(r"\bсогласна\b"), "согласен"),
     (re.compile(r"\bСогласна\b"), "Согласен"),
     (re.compile(r"\bуверена\b"), "уверен"),

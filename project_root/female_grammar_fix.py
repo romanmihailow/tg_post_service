@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 
-# Order: "не согласен"/"не уверен" FIRST (before single words). \s+ for multi-space/newline.
+# Order: "не …" and "бы …" FIRST (before single words). \s+ for multi-space/newline.
 _FEMALE_GRAMMAR_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
+    # не + прилагательное/краткое
     (re.compile(r"\bне\s+согласен\b"), "не согласна"),
     (re.compile(r"\bНе\s+согласен\b"), "Не согласна"),
     (re.compile(r"\bне\s+уверен\b"), "не уверена"),
@@ -14,6 +15,30 @@ _FEMALE_GRAMMAR_REPLACEMENTS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"\bНе\s+удивлён\b"), "Не удивлена"),
     (re.compile(r"\bне\s+удивлен\b"), "не удивлена"),
     (re.compile(r"\bНе\s+удивлен\b"), "Не удивлена"),
+    # бы + глагол (Я бы сказал → Я бы сказала)
+    (re.compile(r"\bбы\s+сказал\b"), "бы сказала"),
+    (re.compile(r"\bБы\s+сказал\b"), "Бы сказала"),
+    (re.compile(r"\bбы\s+уточнил\b"), "бы уточнила"),
+    (re.compile(r"\bбы\s+поспорил\b"), "бы поспорила"),
+    (re.compile(r"\bбы\s+добавил\b"), "бы добавила"),
+    (re.compile(r"\bбы\s+отметил\b"), "бы отметила"),
+    (re.compile(r"\bбы\s+подумал\b"), "бы подумала"),
+    (re.compile(r"\bбы\s+считал\b"), "бы считала"),
+    (re.compile(r"\bбы\s+хотел\b"), "бы хотела"),
+    (re.compile(r"\bбы\s+сделал\b"), "бы сделала"),
+    (re.compile(r"\bбы\s+решил\b"), "бы решила"),
+    (re.compile(r"\bбы\s+написал\b"), "бы написала"),
+    (re.compile(r"\bбы\s+ответил\b"), "бы ответила"),
+    (re.compile(r"\bбы\s+согласился\b"), "бы согласилась"),
+    (re.compile(r"\bбы\s+думал\b"), "бы думала"),
+    # глагол + бы (Сказал бы → Сказала бы)
+    (re.compile(r"\bСказал\s+бы\b"), "Сказала бы"),
+    (re.compile(r"\bсказал\s+бы\b"), "сказала бы"),
+    (re.compile(r"\bУточнил\s+бы\b"), "Уточнила бы"),
+    (re.compile(r"\bПоспорил\s+бы\b"), "Поспорила бы"),
+    (re.compile(r"\bДобавил\s+бы\b"), "Добавила бы"),
+    (re.compile(r"\bПодумал\s+бы\b"), "Подумала бы"),
+    # прилагательные/краткие
     (re.compile(r"\bсогласен\b"), "согласна"),
     (re.compile(r"\bСогласен\b"), "Согласна"),
     (re.compile(r"\bуверен\b"), "уверена"),
