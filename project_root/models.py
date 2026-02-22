@@ -201,6 +201,7 @@ class DiscussionState(Base):
         DateTime, nullable=True
     )
     recent_topics_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    recent_questions_json: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     next_due_at: Mapped[Optional[datetime]] = mapped_column(DateTime, nullable=True)
 
 

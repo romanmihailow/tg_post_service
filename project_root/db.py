@@ -232,6 +232,12 @@ def _ensure_discussion_state_schema() -> None:
                     "ALTER TABLE discussion_state ADD COLUMN recent_topics_json TEXT"
                 )
             )
+        if "recent_questions_json" not in columns:
+            connection.execute(
+                text(
+                    "ALTER TABLE discussion_state ADD COLUMN recent_questions_json TEXT"
+                )
+            )
         connection.commit()
 
 
@@ -528,6 +534,8 @@ def get_session() -> Generator[Session, None, None]:
 
 
 def _ensure_pipelines(session: Session, pipelines: Iterable[PipelineConfig]) -> None:
+    """Create pipelines from config if missing. For existing pipelines, do NOT overwrite
+    — settings changed via bot must persist across deploy."""
     for pipeline_config in pipelines:
         pipeline = session.execute(
             select(Pipeline).where(Pipeline.name == pipeline_config.name)
@@ -545,18 +553,19 @@ def _ensure_pipelines(session: Session, pipelines: Iterable[PipelineConfig]) -> 
             session.add(pipeline)
             session.flush()
         else:
-            pipeline.destination_channel = pipeline_config.destination
-            pipeline.posting_mode = pipeline_config.mode
-            pipeline.interval_seconds = pipeline_config.interval_seconds
-            pipeline.blackbox_every_n = pipeline_config.blackbox_every_n
-            pipeline.account_name = pipeline_config.account
-            pipeline.pipeline_type = pipeline_config.pipeline_type
-            if pipeline_config.pipeline_type == "DISCUSSION":
-                pipeline.is_enabled = 1
+            # Existing pipeline: do not overwrite — preserve bot-edited settings
+            existing_sources = {source.source_channel for source in pipeline.sources}
+            # Add new sources from config only if pipeline had no sources (fresh create edge case)
+            if not existing_sources:
+                for channel in pipeline_config.sources:
+                    session.add(
+                        PipelineSource(
+                            pipeline_id=pipeline.id, source_channel=channel
+                        )
+                    )
+            continue
 
-        existing_sources = {
-            source.source_channel for source in pipeline.sources
-        }
+        existing_sources = {source.source_channel for source in pipeline.sources}
         for channel in pipeline_config.sources:
             if channel not in existing_sources:
                 session.add(
@@ -565,7 +574,6 @@ def _ensure_pipelines(session: Session, pipelines: Iterable[PipelineConfig]) -> 
                     )
                 )
         if pipeline_config.pipeline_type == "DISCUSSION":
-            # k_min/k_max come from config (PipelineConfig defaults or DISCUSSION_K_MIN/K_MAX env); synced on every init_db.
             upsert_discussion_settings(
                 session,
                 pipeline_id=pipeline.id,

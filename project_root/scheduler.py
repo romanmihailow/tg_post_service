@@ -798,6 +798,35 @@ def _load_recent_fingerprints(state: DiscussionState) -> list[str]:
     return fps
 
 
+_LAST_QUESTIONS_LIMIT = 5
+
+
+def _load_recent_questions(state: DiscussionState) -> list[str]:
+    """Load last N questions from state for variety hint."""
+    raw = (state.recent_questions_json or "").strip()
+    if not raw:
+        return []
+    try:
+        data = json.loads(raw)
+        if isinstance(data, list):
+            return [str(q).strip() for q in data if str(q).strip()][:_LAST_QUESTIONS_LIMIT]
+    except json.JSONDecodeError:
+        pass
+    return []
+
+
+def _update_recent_questions(state: DiscussionState, question: str, limit: int = _LAST_QUESTIONS_LIMIT) -> None:
+    """Append question to recent list, keep last limit items."""
+    current = _load_recent_questions(state)
+    q = str(question).strip()
+    if not q:
+        return
+    if q in current:
+        current.remove(q)
+    current.insert(0, q)
+    state.recent_questions_json = json.dumps(current[:limit], ensure_ascii=False)
+
+
 def _update_recent_topics(
     state: DiscussionState,
     topics: list[str],
@@ -1474,11 +1503,13 @@ async def _process_discussion_pipeline(
             state="generating_question",
             message="generating discussion question",
         )
+        last_questions = _load_recent_questions(state)
         payload, in_t2, out_t2, total_t2 = await asyncio.to_thread(
             primary_account.openai_client.generate_discussion_messages,
             news_text,
             replies_count,
             roles,
+            last_questions=last_questions,
             pipeline_id=pipeline.id,
             chat_id=settings.target_chat,
             extra={"source": "pipeline1", "post_id": selected_item.message_id},
@@ -1542,6 +1573,7 @@ async def _process_discussion_pipeline(
         add_fingerprint=sel_fp,
         fingerprint_ring_size=fp_ring_size,
     )
+    _update_recent_questions(state, question)
     state.expires_at = now + timedelta(minutes=60)
     state.replies_planned = len(replies)
     state.replies_sent = 0
