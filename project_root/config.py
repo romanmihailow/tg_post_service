@@ -272,6 +272,8 @@ class Config(BaseSettings):
     BLACKBOX_MIN_WORD_LEN: int = Field(default=6)
     BLACKBOX_DISTORT_MIN: int = Field(default=2)
     BLACKBOX_DISTORT_MAX: int = Field(default=4)
+    # Отключить искажение регистра (воСьМИ, зДаНиЯ) — по умолчанию выключено, т.к. выглядит как спам
+    BLACKBOX_CASE_DISTORT: bool = Field(default=False)
     DEDUP_ENABLED: bool = Field(default=True)
     DEDUP_WINDOW_SIZE: int = Field(
         default=15,
@@ -281,6 +283,11 @@ class Config(BaseSettings):
         default=10.5,
         description="BM25 similarity threshold: posts with score >= threshold are filtered as duplicates. "
         "8.5 was too strict for sports/news (shared vocabulary). 10.5 filters only near-exact duplicates.",
+    )
+    DEDUP_SEMANTIC_OVERLAP_THRESHOLD: float = Field(
+        default=0.45,
+        description="Jaccard overlap of significant words: if new text overlaps >= this with any recent post, skip. "
+        "Catches same news from different sources with different wording. 0 = disabled.",
     )
 
     # Pipeline 1 Discussion anti-repeat (fingerprint ring buffer)

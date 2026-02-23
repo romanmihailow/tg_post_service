@@ -1057,7 +1057,23 @@ async def _process_pipeline_once(
         )
         if is_similar:
             logger.info(
-                "Skipping similar news in pipeline %s source %s",
+                "Skipping similar news (BM25) in pipeline %s source %s",
+                pipeline.name,
+                source.source_channel,
+            )
+            source.last_message_id = message.id
+            state.current_source_index = (index + 1) % len(sources)
+            return False
+        overlap_threshold = getattr(config, "DEDUP_SEMANTIC_OVERLAP_THRESHOLD", 0.45)
+        if _is_semantically_similar_to_recent(
+            session,
+            pipeline.id,
+            original_text,
+            config.DEDUP_WINDOW_SIZE,
+            overlap_threshold=overlap_threshold,
+        ):
+            logger.info(
+                "Skipping similar news (semantic overlap) in pipeline %s source %s",
                 pipeline.name,
                 source.source_channel,
             )
@@ -3123,7 +3139,7 @@ async def _post_message(
         paraphrased, in_tokens, out_tokens, total_tokens = await asyncio.to_thread(
             openai_client.paraphrase_news, text
         )
-        if apply_blackbox:
+        if apply_blackbox and getattr(config, "BLACKBOX_CASE_DISTORT", False):
             paraphrased = _apply_blackbox_effect(
                 paraphrased,
                 ratio=config.BLACKBOX_WORD_RATIO,
@@ -3182,7 +3198,7 @@ async def _post_message(
     paraphrased, in_tokens, out_tokens, total_tokens = await asyncio.to_thread(
         openai_client.paraphrase_news, text
     )
-    if apply_blackbox:
+    if apply_blackbox and getattr(config, "BLACKBOX_CASE_DISTORT", False):
         paraphrased = _apply_blackbox_effect(
             paraphrased,
             ratio=config.BLACKBOX_WORD_RATIO,
@@ -3651,6 +3667,49 @@ def _store_recent_post(
 def _tokenize(text: str) -> list[str]:
     words = re.findall(r"[A-Za-zА-Яа-яЁё]+", text.lower())
     return [word for word in words if word not in _STOPWORDS_RU and len(word) > 3]
+
+
+def _significant_words_set(text: str) -> frozenset[str]:
+    """Set of significant words for semantic overlap (same news, different wording)."""
+    return frozenset(_tokenize(text))
+
+
+def _is_semantically_similar_to_recent(
+    session: Session,
+    pipeline_id: int,
+    text: str,
+    window_size: int,
+    overlap_threshold: float = 0.45,
+) -> bool:
+    """True if text has high word overlap with any recent post (catches same news, different phrasing)."""
+    if window_size <= 0 or overlap_threshold <= 0:
+        return False
+    new_words = _significant_words_set(text)
+    if len(new_words) < 5:
+        return False
+    recent_texts = (
+        session.execute(
+            select(PostHistory.text)
+            .where(PostHistory.pipeline_id == pipeline_id)
+            .order_by(PostHistory.id.desc())
+            .limit(window_size)
+        )
+        .scalars()
+        .all()
+    )
+    for old in recent_texts:
+        if not (old or "").strip():
+            continue
+        old_words = _significant_words_set(old)
+        if len(old_words) < 5:
+            continue
+        inter = len(new_words & old_words)
+        union = len(new_words | old_words)
+        if union > 0:
+            jaccard = inter / union
+            if jaccard >= overlap_threshold:
+                return True
+    return False
 
 
 async def _sleep_between_cycles(min_seconds: float, max_seconds: float) -> None:
